@@ -1,0 +1,23 @@
+{
+  "name": "omniguard-ai-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy:origin": "tsx deploy-origin.ts",
+    "deploy:reactive": "tsx deploy-reactive.ts",
+    "deploy:destination": "tsx deploy-destination.ts",
+    "deploy:all": "tsx deploy-origin.ts && tsx deploy-reactive.ts && tsx deploy-destination.ts",
+    "demo:trigger": "tsx trigger-demo.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "viem": "^2.23.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

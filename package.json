@@ -1,0 +1,18 @@
+{
+  "name": "omniguard-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OmniGuard AI — Autonomous Cross-Chain DeFi Risk Sentinel & Neural Policy Co-Pilot powered by Reactive Omni",
+  "scripts": {
+    "test:contracts": "cd contracts && forge test -vv",
+    "test:agent": "cd agent && npm test",
+    "dev:agent": "cd agent && npm run dev",
+    "dev:dashboard": "cd dashboard && npm run dev",
+    "build:dashboard": "cd dashboard && npm run build",
+    "deploy:origin": "cd scripts && npm run deploy:origin",
+    "deploy:reactive": "cd scripts && npm run deploy:reactive",
+    "deploy:destination": "cd scripts && npm run deploy:destination",
+    "deploy:all": "cd scripts && npm run deploy:all",
+    "demo:trigger": "cd scripts && npm run demo:trigger"
+  }
+}

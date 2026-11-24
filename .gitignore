@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+dashboard/node_modules/
+agent/node_modules/
+scripts/node_modules/
+
+# Build outputs
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+dashboard/dist/
+agent/dist/
+
+# Secrets & local state
+.env
+.env.local
+.env.*.local
+deployments/local-secrets.json
+
+# OS / Editor
+.DS_Store
+*.log
