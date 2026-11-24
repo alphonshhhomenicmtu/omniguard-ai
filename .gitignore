@@ -14,6 +14,7 @@ agent/dist/
 # Secrets & local state
 .env
 .env.local
+.env.testnet
 .env.*.local
 deployments/local-secrets.json
 

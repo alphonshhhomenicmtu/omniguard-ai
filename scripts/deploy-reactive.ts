@@ -31,11 +31,17 @@ async function main() {
   console.log(`[Reactive Lasna 5318007] Deployer: ${lasna.account.address} | Balance: ${formatEther(balance)} lREACT`);
   console.log(`[Reactive Lasna] Deploying OmniGuardReactive (funding with ${formatEther(fundValue)} lREACT)...`);
 
+  const gasPrice = await lasna.publicClient.getGasPrice();
+  const maxPriorityFeePerGas = 1_000_000_000n; // Lasna requires gas tip cap >= 1 wei
+  const maxFeePerGas = gasPrice + maxPriorityFeePerGas * 2n;
+
   const txHash = await lasna.walletClient.deployContract({
     abi,
     bytecode,
     args: [BigInt(baseSepoliaChain.id), deployments.baseMarketFeed, lasna.account.address],
     value: fundValue,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
   });
 
   const receipt = await lasna.publicClient.waitForTransactionReceipt({ hash: txHash });
@@ -51,6 +57,8 @@ async function main() {
       abi,
       functionName: "setSecondaryOriginFeed",
       args: [BigInt(unichainSepoliaChain.id), deployments.unichainMarketFeed],
+      maxPriorityFeePerGas,
+      maxFeePerGas,
     });
     await lasna.publicClient.waitForTransactionReceipt({ hash: subTx });
     console.log(`[Reactive Lasna] Secondary feed subscription confirmed: ${subTx}`);

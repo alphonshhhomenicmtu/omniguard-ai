@@ -166,6 +166,10 @@ async function main() {
     },
   ];
 
+  const lasnaGasPrice = await lasna.publicClient.getGasPrice();
+  const lasnaTip = 1_000_000_000n;
+  const lasnaMaxFee = lasnaGasPrice + lasnaTip * 2n;
+
   const ruleIds: Record<string, number> = {};
   let idx = 1;
   for (const r of rulesToRegister) {
@@ -174,6 +178,8 @@ async function main() {
       abi: reactiveArtifact.abi,
       functionName: "createRule",
       args: [r.params],
+      maxPriorityFeePerGas: lasnaTip,
+      maxFeePerGas: lasnaMaxFee,
     });
     await lasna.publicClient.waitForTransactionReceipt({ hash: tx });
     ruleIds[r.label] = idx++;

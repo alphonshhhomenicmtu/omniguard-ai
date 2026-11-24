@@ -1,0 +1,20 @@
+{
+  "deployer": "0x06ECf94D9baAFB70daE7A499135e35D1156d4c03",
+  "neuralSigner": "0x06ECf94D9baAFB70daE7A499135e35D1156d4c03",
+  "baseMarketFeed": "0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80",
+  "baseMarketFeedTx": "0x2a2f09da274a30772c8e182a6146cdba8fc2226fc9e591c295cffacde38b7df9",
+  "unichainMarketFeed": "0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80",
+  "unichainMarketFeedTx": "0x7c8d8e65d6d5526bd6ba6a5f222fb31ebd3d06c77ec3105a7be5b0a123b18345",
+  "updatedAt": "2026-11-24T11:00:55.255Z",
+  "reactiveGuard": "0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6",
+  "reactiveGuardTx": "0x7eeeaeefaa31ce90ea9988419babd8456d2ff488d00be36303ba1f20024c471d",
+  "baseGuardVault": "0x5b1066a69297e2ec1d1e46374184669568d3380c",
+  "baseGuardVaultTx": "0x1d8e2c2514fe57b6fa7e6058cef87338c1f2736b3638bcb8d329e31082d4439e",
+  "unichainGuardVault": "0x5b1066a69297e2ec1d1e46374184669568d3380c",
+  "unichainGuardVaultTx": "0xec51c6a6f610b00a323132dd5d6ca2804059ec67a148df345229f48853250f84",
+  "ruleIds": {
+    "stopLossBaseToDest": 1,
+    "healthFactorRescueBase": 2,
+    "neuralCascadeCircuitBreaker": 3
+  }
+}

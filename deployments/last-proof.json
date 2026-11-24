@@ -1,0 +1,46 @@
+{
+  "recordedAt": "2026-11-24T11:01:14.173Z",
+  "originChain": "Base Sepolia (84532)",
+  "reactiveChain": "Reactive Lasna (5318007)",
+  "destinationChain": "Unichain Sepolia (1301)",
+  "originTxHash": "0x1155b750cbe38ef1ede5727ef1819f7b8fd50625366c836a887e555a83243dd2",
+  "neuralAdvisementTxHash": "0xb11c83b3b5893ab11209c8f2fb0efd62c3f25bc3d7e2585737cd360e288b7f37",
+  "reactiveTxHash": "0x34598c2fb358b08bfb9ea5e6213f9377c33226db193fd29f4f0a0559355d2e9f",
+  "callbackTxHash": "0xcb2cb194a1c4a561e911e253832021d8a9c3e8b6be3de9a87090f7e7fb8b1f4c",
+  "onChainEndToEndLatencySec": 2,
+  "wallClockEndToEndMs": 7155,
+  "loops": [
+    {
+      "name": "Rule #1: Stop-Loss Hedge (Base Sepolia 200ms -> Reactive Lasna -> Unichain Sepolia)",
+      "ruleId": 1,
+      "actionType": "HEDGE_TO_STABLE",
+      "appliedBps": 5000,
+      "originTxHash": "0x1155b750cbe38ef1ede5727ef1819f7b8fd50625366c836a887e555a83243dd2",
+      "originBlock": 62980986,
+      "originTimestamp": 1795518066,
+      "reactiveTxHash": "0x34598c2fb358b08bfb9ea5e6213f9377c33226db193fd29f4f0a0559355d2e9f",
+      "reactiveBlock": 9131928,
+      "callbackTxHash": "0xcb2cb194a1c4a561e911e253832021d8a9c3e8b6be3de9a87090f7e7fb8b1f4c",
+      "callbackBlock": 68665640,
+      "callbackTimestamp": 1795518068,
+      "receiptId": 0,
+      "onChainEndToEndLatencySec": 2
+    },
+    {
+      "name": "Rule #3: Closed-Loop EIP-712 Neural Cascade Circuit Breaker (Base Sepolia -> Reactive Lasna -> Unichain Sepolia)",
+      "ruleId": 3,
+      "actionType": "CIRCUIT_BREAKER_PAUSE",
+      "appliedBps": 6500,
+      "aiRiskScoreBps": 9120,
+      "originTxHash": "0xb11c83b3b5893ab11209c8f2fb0efd62c3f25bc3d7e2585737cd360e288b7f37",
+      "originTimestamp": 1795518068,
+      "reactiveTxHash": "0xdb6d3164304d8e7c24e92803bd36e0e0c3b70e3e0b443c1e4113adc97f21c428",
+      "reactiveBlock": 9131931,
+      "callbackTxHash": "0x60a450775431b9f27b2065b138cc6cfd737642ad31b16b3f92efd1e9ba7783c2",
+      "callbackBlock": 68665643,
+      "callbackTimestamp": 1795518071,
+      "receiptId": 1,
+      "onChainEndToEndLatencySec": 3
+    }
+  ]
+}

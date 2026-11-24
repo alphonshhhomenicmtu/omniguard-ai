@@ -15,6 +15,10 @@ import { privateKeyToAccount } from "viem/accounts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "..");
+const envTestnetPath = path.join(REPO_ROOT, ".env.testnet");
+if (fs.existsSync(envTestnetPath)) {
+  dotenv.config({ path: envTestnetPath });
+}
 dotenv.config({ path: path.join(REPO_ROOT, ".env") });
 
 export const DEPLOYMENTS_DIR = path.join(REPO_ROOT, "deployments");

@@ -9,6 +9,31 @@ Built for the **DoraHacks Reactive Omni Buildathon** targeting:
 
 ---
 
+## Live Verified Testnet Deployment & Cross-Chain Proofs (Reactive Omni)
+
+All contracts are deployed live across **Base Sepolia (84532)**, **Reactive Lasna (5318007)**, and **Unichain Sepolia (1301)** (see [`deployments/testnet.json`](deployments/testnet.json) and [`deployments/last-proof.json`](deployments/last-proof.json)):
+
+### Deployed Contracts (Deployer: `0x06ECf94D9baAFB70daE7A499135e35D1156d4c03`)
+
+| Network | Chain ID | Contract | Deployed Address | Deployment Tx |
+|---|---:|---|---|---|
+| **Base Sepolia** | `84532` | `OmniMarketFeed` (Primary Origin) | [`0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80`](https://sepolia.basescan.org/address/0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80) | `0x2a2f09da274a30772c8e182a6146cdba8fc2226fc9e591c295cffacde38b7df9` |
+| **Unichain Sepolia** | `1301` | `OmniMarketFeed` (Secondary Origin) | [`0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80`](https://sepolia.uniscan.xyz/address/0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80) | `0x7c8d8e65d6d5526bd6ba6a5f222fb31ebd3d06c77ec3105a7be5b0a123b18345` |
+| **Reactive Lasna** | `5318007` | `OmniGuardReactive` (`AbstractReactive`) | [`0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6`](https://lasna.reactscan.net/address/0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6) | `0x7eeeaeefaa31ce90ea9988419babd8456d2ff488d00be36303ba1f20024c471d` |
+| **Base Sepolia** | `84532` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.basescan.org/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | `0x1d8e2c2514fe57b6fa7e6058cef87338c1f2736b3638bcb8d329e31082d4439e` |
+| **Unichain Sepolia** | `1301` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.uniscan.xyz/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | `0xec51c6a6f610b00a323132dd5d6ca2804059ec67a148df345229f48853250f84` |
+
+### Verified Full-Loop Cross-Chain Executions (`Base Sepolia 84532 -> Reactive Lasna 5318007 -> Unichain Sepolia 1301`)
+
+| Loop | Trigger Event (Base Sepolia 84532) | Reactive `react()` Tx (Lasna 5318007) | Destination Callback Tx (Unichain Sepolia 1301) | Measured On-Chain Latency (`cbTs - originTs`) |
+|---|---|---|---|---:|
+| **Loop 1: Stop-Loss Hedge (Rule #1, 50% hedge)** | `0x1155b750cbe38ef1ede5727ef1819f7b8fd50625366c836a887e555a83243dd2` (block `62980986`, `-6.00%` crash) | `0x34598c2fb358b08bfb9ea5e6213f9377c33226db193fd29f4f0a0559355d2e9f` (block `9131928`) | `0xcb2cb194a1c4a561e911e253832021d8a9c3e8b6be3de9a87090f7e7fb8b1f4c` (block `68665640`, receipt `#0`) | **2 seconds** |
+| **Loop 2: Closed-Loop AI Circuit Breaker (Rule #3, EIP-712 `CASCADE_CRITICAL`, 91.2% risk, 65% hedge)** | `0xb11c83b3b5893ab11209c8f2fb0efd62c3f25bc3d7e2585737cd360e288b7f37` (EIP-712 `ecrecover`) | `0xdb6d3164304d8e7c24e92803bd36e0e0c3b70e3e0b443c1e4113adc97f21c428` (block `9131931`) | `0x60a450775431b9f27b2065b138cc6cfd737642ad31b16b3f92efd1e9ba7783c2` (block `68665643`, receipt `#1`) | **3 seconds** |
+
+- **Demo Video (1080p YouTube):** https://youtu.be/pggBrUXMLTo
+
+---
+
 ## Live Dashboard Preview
 
 | Command Console & Live 3-Chain RPC Telemetry | Post-Cascade Execution Proof & Neural Escalation |
