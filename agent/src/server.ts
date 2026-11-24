@@ -195,10 +195,11 @@ async function seedInitialState() {
       riskScoreBps: latestNeural.riskScoreBps,
       recommendedHedgeBps: latestNeural.recommendedHedgeBps,
       issuedAt: now,
-      validUntil: now + 300n,
+      validUntil: now + 180n,
       nonce: advisementNonce++,
     },
     privateKeyHex: process.env.NEURAL_SIGNER_PRIVATE_KEY,
+    allowEphemeralSimulationKey: true,
   });
 }
 
@@ -227,12 +228,15 @@ app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
   const deployments = loadDeploymentAddresses();
-  const signer = getNeuralSignerAccount(process.env.NEURAL_SIGNER_PRIVATE_KEY);
+  const { account, simulatedSigner } = getNeuralSignerAccount(process.env.NEURAL_SIGNER_PRIVATE_KEY, {
+    allowEphemeralSimulationKey: true,
+  });
   res.json({
     ok: true,
     service: "omniguard-ai-agent",
-    mode: deployments.reactiveGuard ? "live-testnet" : "omni-simulator",
-    neuralSignerAddress: signer.address,
+    mode: simulatedSigner ? "omni-simulator" : deployments.reactiveGuard ? "live-testnet-configured" : "omni-simulator",
+    simulatedSigner,
+    neuralSignerAddress: account.address,
     deployments,
     networks: NETWORK_CONFIG,
   });
@@ -438,7 +442,7 @@ app.post("/api/simulate-event", async (req, res) => {
     secondsSinceLastTick: 1,
   });
 
-  // 2. Sign EIP-712 Neural Advisement matching OmniMarketFeed.sol
+  // 2. Sign EIP-712 Neural Advisement matching OmniMarketFeed.sol (explicitly badged SIMULATED if ephemeral)
   const signedAdvisement = await signNeuralAdvisement({
     chainId: 84532,
     verifyingContract: (deployments.baseMarketFeed || "0x0000000000000000000000000000000000084532") as Address,
@@ -448,10 +452,11 @@ app.post("/api/simulate-event", async (req, res) => {
       riskScoreBps: latestNeural.riskScoreBps,
       recommendedHedgeBps: latestNeural.recommendedHedgeBps,
       issuedAt: BigInt(nowSec),
-      validUntil: BigInt(nowSec + 300),
+      validUntil: BigInt(nowSec + 180),
       nonce: advisementNonce++,
     },
     privateKeyHex: process.env.NEURAL_SIGNER_PRIVATE_KEY,
+    allowEphemeralSimulationKey: true,
   });
   latestSignedAdvisement = signedAdvisement;
 
@@ -539,7 +544,8 @@ app.post("/api/simulate-event", async (req, res) => {
       circuitBreakerActive: vaultState.circuitBreakerActive,
     },
     signedAdvisement,
-    mode: deployments.reactiveGuard ? "live-testnet" : "omni-simulator",
+    // Honesty invariant: locally hashed simulator traces are NEVER labeled "live-testnet".
+    mode: "omni-simulator",
   };
 
   executionHistory.unshift(execution);

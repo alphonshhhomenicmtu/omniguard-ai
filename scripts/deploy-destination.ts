@@ -170,6 +170,31 @@ async function main() {
   const lasnaTip = 1_000_000_000n;
   const lasnaMaxFee = lasnaGasPrice + lasnaTip * 2n;
 
+  // V2 Security: Allowlist deployed destination vaults before registering rules
+  const allowBaseTx = await lasna.walletClient.writeContract({
+    address: deployments.reactiveGuard,
+    abi: reactiveArtifact.abi,
+    functionName: "setAllowedDestinationVault",
+    args: [BigInt(baseSepoliaChain.id), baseVaultAddr, true],
+    maxPriorityFeePerGas: lasnaTip,
+    maxFeePerGas: lasnaMaxFee,
+  });
+  await lasna.publicClient.waitForTransactionReceipt({ hash: allowBaseTx });
+  console.log(`[Reactive Lasna] Allowlisted Base Sepolia vault ${baseVaultAddr}: ${allowBaseTx}`);
+
+  if (unichainVaultAddr) {
+    const allowUniTx = await lasna.walletClient.writeContract({
+      address: deployments.reactiveGuard,
+      abi: reactiveArtifact.abi,
+      functionName: "setAllowedDestinationVault",
+      args: [BigInt(unichainSepoliaChain.id), unichainVaultAddr, true],
+      maxPriorityFeePerGas: lasnaTip,
+      maxFeePerGas: lasnaMaxFee,
+    });
+    await lasna.publicClient.waitForTransactionReceipt({ hash: allowUniTx });
+    console.log(`[Reactive Lasna] Allowlisted Unichain Sepolia vault ${unichainVaultAddr}: ${allowUniTx}`);
+  }
+
   const ruleIds: Record<string, number> = {};
   let idx = 1;
   for (const r of rulesToRegister) {

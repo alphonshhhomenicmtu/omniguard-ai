@@ -122,9 +122,11 @@ export async function compileNaturalLanguageRule(
   }
 
   if (/\b(circuit\s*breaker|emergency\s*pause|freeze)\b/i.test(lower)) {
-    actionType = "CIRCUIT_BREAKER_PAUSE";
-    actionTypeIndex = 2;
-  } else if (/\b(deleverage|repay\s*debt)\b/i.test(lower)) {
+    if (kind === "STOP_LOSS_HEDGE" || kind === "AI_REGIME_ESCALATION") {
+      actionType = "CIRCUIT_BREAKER_PAUSE";
+      actionTypeIndex = 2;
+    }
+  } else if (/\b(deleverage|repay\s*debt)\b/i.test(lower) && kind === "HEALTH_FACTOR_RESCUE") {
     actionType = "DELEVERAGE_COLLATERAL";
     actionTypeIndex = 1;
   }

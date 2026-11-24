@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { verifyTypedData, type Address } from "viem";
-import { signNeuralAdvisement } from "./eip712Signer.js";
+import { getNeuralSignerAccount, signNeuralAdvisement } from "./eip712Signer.js";
 import { runNeuralRiskInference } from "./neuralModel.js";
 import { compileNaturalLanguageRule, marketIdFromSymbol } from "./ruleCompiler.js";
 
@@ -56,6 +56,7 @@ test("Natural-language compiler converts block cooldowns to Base Sepolia timesta
     "Rescue my Base vault if health factor falls below 1.25x by deleveraging 40% of debt with a 60s cooldown"
   );
   assert.equal(hfRule.kind, "HEALTH_FACTOR_RESCUE");
+  assert.equal(hfRule.actionType, "DELEVERAGE_COLLATERAL");
   assert.equal(hfRule.destinationChainId, 84532);
   assert.equal(hfRule.hedgeBps, 4000);
 
@@ -63,26 +64,34 @@ test("Natural-language compiler converts block cooldowns to Base Sepolia timesta
     "Trigger emergency circuit breaker on Unichain and hedge 65% whenever neural AI risk exceeds 75% with a 45s cooldown"
   );
   assert.equal(aiRule.kind, "AI_REGIME_ESCALATION");
+  assert.equal(aiRule.actionType, "CIRCUIT_BREAKER_PAUSE");
   assert.equal(aiRule.aiRiskThresholdBps, 7500);
   assert.equal(aiRule.hedgeBps, 6500);
 });
 
-test("EIP-712 Neural Advisement signature verifies cleanly against domain and signer", async () => {
+test("EIP-712 signer fails closed when NEURAL_SIGNER_PRIVATE_KEY is unset", () => {
+  assert.throws(() => getNeuralSignerAccount(undefined), /fail-closed/i);
+  assert.throws(() => getNeuralSignerAccount("not-a-key"), /fail-closed/i);
+});
+
+test("EIP-712 Neural Advisement signature verifies cleanly in explicit simulated mode", async () => {
   const verifyingContract = "0x1234567890123456789012345678901234567890" as Address;
   const signed = await signNeuralAdvisement({
     chainId: 84532,
     verifyingContract,
+    allowEphemeralSimulationKey: true,
     advisement: {
       marketId: marketIdFromSymbol("WETH/USDC"),
       regime: 3,
       riskScoreBps: 8900,
       recommendedHedgeBps: 6500,
       issuedAt: 1_795_500_000n,
-      validUntil: 1_795_500_300n,
+      validUntil: 1_795_500_180n,
       nonce: 0n,
     },
   });
 
+  assert.equal(signed.simulatedSigner, true);
   const valid = await verifyTypedData({
     address: signed.signer,
     domain: {

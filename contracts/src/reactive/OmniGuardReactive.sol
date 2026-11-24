@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.29;
+pragma solidity 0.8.29;
 
 import { ISystemContract } from "@reactive/src/interfaces/ISystemContract.sol";
 import { IReactive } from "@reactive/src/interfaces/IReactive.sol";
@@ -9,15 +9,24 @@ import { OmniGuardTypes } from "../interfaces/IOmniGuardTypes.sol";
 /**
  * @title OmniGuardReactive
  * @notice Autonomous Cross-Chain DeFi Risk Sentinel & Neural Policy Executor deployed on Reactive Lasna (5318007).
- * @dev Built natively on Reactive Omni (`reactive-lib-omni`):
- *      - Uses `SYSTEM` (0x8888888888888888888888888888888888888888) and `onlySystem`.
- *      - Dispatches cross-chain callbacks via `SYSTEM.requestCallbackV_1_0(...)` with `address(0)` as the first
- *        payload parameter for Reactive Network's 160-bit sender authentication injection.
- *      - Enforces STRICT Unix timestamp cooldowns and deadlines (NEVER block.number) for Base Sepolia's 200ms blocks.
- *      - Integrates live EIP-712 Neural Risk Advisements into both adaptive threshold tightening and preemptive escalation.
- *      - Never reverts on non-matching logs inside `react()` to avoid wasted `ReactiveContractReverted` gas charges.
+ * @dev V2 Security Hardened on Reactive Omni (`reactive-lib-omni`):
+ *      - Strict owner + allowlisted rule creator gating on `createRule()` (prevents permissionless vault hijack & lREACT drain).
+ *      - Strict destination (chainId, vault) allowlist, hard active rule caps (8/market, 8/vault, 32 total), and swap-and-pop
+ *        pruning on deactivation so `react()` always remains far below Lasna's ~900,000 gas ceiling.
+ *      - Emergency `pause()` / `unpause()` silences `react()` cleanly without reverting (`ReactiveContractReverted`).
+ *      - Strict `RuleKind` <-> `ActionType` validation and cross-chain spread leg freshness window (<= 120s).
+ *      - Strict Checks-Effects-Interactions: all state writes and events complete BEFORE `SYSTEM.requestCallbackV_1_0(...)`.
+ *      - Strict Unix timestamp cooldowns and deadlines (NEVER `block.number`) for Base Sepolia's 200ms blocks.
  */
 contract OmniGuardReactive is AbstractReactive {
+    /// @notice Internal queued callback struct enabling strict CEI dispatch outside rule loops.
+    struct PendingCallback {
+        uint256 chainId;
+        address recipient;
+        uint64 gasLimit;
+        bytes payload;
+    }
+
     /// @notice Legacy system contract on Lasna that emits protocol CRON ticks.
     address internal constant LEGACY_SYSTEM_ADDR = 0x0000000000000000000000000000000000fffFfF;
 
@@ -25,8 +34,31 @@ contract OmniGuardReactive is AbstractReactive {
     uint256 internal constant CRON100_TOPIC_0 = 0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70;
     uint256 internal constant CRON1000_TOPIC_0 = 0xe20b31294d84c3661ddc8f423abb9c70310d0cf172aa2714ead78029b325e3f4;
 
-    /// @notice Contract administrator (also authorized to configure feeds & rules).
+    uint256 private constant CRON_INTERVAL_10 = 10;
+    uint256 private constant CRON_INTERVAL_100 = 100;
+    uint256 private constant CRON_INTERVAL_1000 = 1000;
+
+    uint256 private constant OPCODE_PRICE_UPDATED = 2;
+    uint256 private constant OPCODE_THREE_TOPICS = 3;
+
+    uint256 private constant PERCENT_BASE = 100;
+    uint256 private constant CASCADE_TIGHTEN_PCT = 65;
+    uint256 private constant VOLATILE_TIGHTEN_PCT = 80;
+    uint256 private constant ELEVATED_TIGHTEN_PCT = 90;
+    uint256 private constant HF_CASCADE_BONUS_BPS = 500;
+    uint256 private constant HF_VOLATILE_BONUS_BPS = 250;
+
+    /// @notice Contract administrator.
     address public owner;
+
+    /// @notice Pending administrator for two-step ownership transfer.
+    address public pendingOwner;
+
+    /// @notice Emergency global pause switch (silences react() and blocks rule creation).
+    bool public paused;
+
+    /// @notice Optional trusted EIP-712 neural signer pin (if non-zero, snapshots from rotated signers are ignored).
+    address public trustedNeuralSigner;
 
     /// @notice Primary origin chain ID (e.g., 84532 for Base Sepolia).
     uint256 public immutable primaryOriginChainId;
@@ -49,13 +81,22 @@ contract OmniGuardReactive is AbstractReactive {
     /// @notice Incrementing guard rule identifier.
     uint256 public nextRuleId = 1;
 
+    /// @notice Total number of currently active rules across all markets and vaults.
+    uint256 public activeRulesCount;
+
+    /// @notice Addresses allowlisted by owner to register rules via `createRule()`.
+    mapping(address => bool) public authorizedRuleCreators;
+
+    /// @notice Allowlisted destination vaults per destination chain ID.
+    mapping(uint256 => mapping(address => bool)) public allowedDestinationVaults;
+
     /// @notice Registry of all guard rules.
     mapping(uint256 => OmniGuardTypes.GuardRule) public rules;
 
-    /// @notice Rule IDs indexed by marketId for O(k) evaluation inside `react()`.
+    /// @notice Active rule IDs indexed by marketId for bounded O(k) evaluation inside `react()`.
     mapping(bytes32 => uint256[]) private _marketRuleIds;
 
-    /// @notice Rule IDs indexed by monitoredVault address for health factor rescues.
+    /// @notice Active rule IDs indexed by monitoredVault address for bounded health factor rescues.
     mapping(address => uint256[]) private _vaultRuleIds;
 
     /// @notice Latest neural risk snapshot received per marketId.
@@ -77,6 +118,14 @@ contract OmniGuardReactive is AbstractReactive {
     uint256 public totalCronTicks;
     uint64 public lastReactionTimestamp;
     uint64 public lastOriginTimestamp;
+
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event PauseStatusChanged(bool paused);
+    event RuleCreatorUpdated(address indexed creator, bool allowed);
+    event DestinationVaultUpdated(uint256 indexed chainId, address indexed vault, bool allowed);
+    event TrustedNeuralSignerUpdated(address indexed previousSigner, address indexed newSigner);
+    event NeuralSnapshotCleared(bytes32 indexed marketId);
 
     event GuardRuleCreated(
         uint256 indexed ruleId,
@@ -115,19 +164,39 @@ contract OmniGuardReactive is AbstractReactive {
     );
 
     event CooldownSkipped(uint256 indexed ruleId, uint64 originTimestamp, uint64 nextEligibleAt);
+    event StaleSpreadLegSkipped(uint256 indexed ruleId, bytes32 indexed marketId, uint64 primaryTs, uint64 secondaryTs);
     event CronHeartbeatObserved(uint256 reactiveBlockNumber, uint64 reactiveTimestamp);
 
     error NotOwner();
+    error NotPendingOwner();
+    error NotAuthorizedRuleCreator(address caller);
     error NotRuleOwner(uint256 ruleId, address caller);
+    error ContractPaused();
     error RuleNotFound(uint256 ruleId);
     error InvalidAddress();
     error InvalidChainId();
+    error DestinationVaultNotAllowed(uint256 chainId, address vault);
+    error RuleCapExceeded(uint256 limit);
+    error IncompatibleRuleAction(OmniGuardTypes.RuleKind kind, OmniGuardTypes.ActionType actionType);
+    error MissingTriggerCondition(OmniGuardTypes.RuleKind kind);
     error InvalidGasLimit(uint64 provided, uint64 minAllowed, uint64 maxAllowed);
     error InvalidBps(uint256 provided);
     error UnsupportedCronInterval(uint256 interval);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    modifier onlyRuleCreator() {
+        if (msg.sender != owner && !authorizedRuleCreators[msg.sender]) {
+            revert NotAuthorizedRuleCreator(msg.sender);
+        }
+        _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert ContractPaused();
         _;
     }
 
@@ -144,6 +213,7 @@ contract OmniGuardReactive is AbstractReactive {
         primaryOriginChainId = primaryOriginChainId_;
         primaryOriginFeed = primaryOriginFeed_;
         owner = owner_;
+        authorizedRuleCreators[owner_] = true;
 
         // Subscribe to all three core origin events on the primary origin chain via Reactive Omni SYSTEM.
         SYSTEM.subscribe(
@@ -172,32 +242,96 @@ contract OmniGuardReactive is AbstractReactive {
         );
     }
 
+    /// @notice Initiates a two-step ownership transfer.
+    function transferOwnership(address newOwner_) external onlyOwner {
+        if (newOwner_ == address(0)) revert InvalidAddress();
+        pendingOwner = newOwner_;
+        emit OwnershipTransferStarted(owner, newOwner_);
+    }
+
+    /// @notice Completes a two-step ownership transfer.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address prev = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        authorizedRuleCreators[owner] = true;
+        emit OwnershipTransferred(prev, owner);
+    }
+
+    /// @notice Pauses reactive callback dispatch and new rule registrations immediately.
+    function pause() external onlyOwner {
+        paused = true;
+        emit PauseStatusChanged(true);
+    }
+
+    /// @notice Resumes reactive callback dispatch and rule registrations.
+    function unpause() external onlyOwner {
+        paused = false;
+        emit PauseStatusChanged(false);
+    }
+
+    /// @notice Grants or revokes `createRule()` access for a designated automation operator.
+    function setRuleCreator(address creator_, bool allowed_) external onlyOwner {
+        if (creator_ == address(0)) revert InvalidAddress();
+        authorizedRuleCreators[creator_] = allowed_;
+        emit RuleCreatorUpdated(creator_, allowed_);
+    }
+
+    /// @notice Allowlists or revokes a destination (chainId, vault) callback target.
+    function setAllowedDestinationVault(uint256 chainId_, address vault_, bool allowed_) external onlyOwner {
+        if (chainId_ == 0) revert InvalidChainId();
+        if (vault_ == address(0)) revert InvalidAddress();
+        allowedDestinationVaults[chainId_][vault_] = allowed_;
+        emit DestinationVaultUpdated(chainId_, vault_, allowed_);
+    }
+
+    /// @notice Pins or rotates the trusted EIP-712 neural signer; prior snapshots from rotated keys are ignored.
+    function setTrustedNeuralSigner(address signer_) external onlyOwner {
+        if (signer_ == address(0)) revert InvalidAddress();
+        address prev = trustedNeuralSigner;
+        trustedNeuralSigner = signer_;
+        emit TrustedNeuralSignerUpdated(prev, signer_);
+    }
+
+    /// @notice Clears a cached neural snapshot on Reactive Lasna (e.g., after key rotation).
+    function clearNeuralSnapshot(bytes32 marketId_) external onlyOwner {
+        delete latestNeuralByMarket[marketId_];
+        emit NeuralSnapshotCleared(marketId_);
+    }
+
     /// @notice Settles any outstanding debt on Reactive Network from this contract's lREACT balance.
-    function coverDebt() external {
+    function coverDebt() external onlyOwner {
         _coverDebt();
     }
 
     /**
      * @notice Subscribes to a secondary origin chain feed (e.g., Unichain Sepolia 1301) for cross-chain spread detection.
+     * @dev Follows strict Checks-Effects-Interactions before calling SYSTEM or `_coverDebt()`.
      */
     function setSecondaryOriginFeed(uint256 chainId_, address feed_) external onlyOwner {
         if (chainId_ == 0 || chainId_ == primaryOriginChainId) revert InvalidChainId();
         if (feed_ == address(0)) revert InvalidAddress();
 
-        if (secondaryOriginFeed != address(0)) {
+        uint256 oldChainId = secondaryOriginChainId;
+        address oldFeed = secondaryOriginFeed;
+
+        // Effects first (CEI)
+        secondaryOriginChainId = chainId_;
+        secondaryOriginFeed = feed_;
+        emit SecondaryOriginFeedUpdated(chainId_, feed_);
+
+        // Interactions last
+        if (oldFeed != address(0)) {
             SYSTEM.unsubscribe(
-                secondaryOriginChainId,
-                secondaryOriginFeed,
+                oldChainId,
+                oldFeed,
                 OmniGuardTypes.PRICE_UPDATED_TOPIC0,
                 REACTIVE_IGNORE,
                 REACTIVE_IGNORE,
                 REACTIVE_IGNORE
             );
         }
-
-        secondaryOriginChainId = chainId_;
-        secondaryOriginFeed = feed_;
-
         _coverDebt();
         SYSTEM.subscribe(
             chainId_,
@@ -207,26 +341,31 @@ contract OmniGuardReactive is AbstractReactive {
             REACTIVE_IGNORE,
             REACTIVE_IGNORE
         );
-
-        emit SecondaryOriginFeedUpdated(chainId_, feed_);
     }
 
     /// @notice Enables optional Reactive protocol CRON heartbeat subscription (interval: 10, 100, or 1000 blocks).
     function enableCron(uint256 interval_) external onlyOwner {
         uint256 topic0 = _cronTopicFor(interval_);
-        if (cronEnabled) {
+        bool wasEnabled = cronEnabled;
+        uint256 oldTopic0 = activeCronTopic0;
+
+        // Effects first (CEI)
+        cronEnabled = true;
+        activeCronTopic0 = topic0;
+        emit CronSubscriptionUpdated(true, topic0);
+
+        // Interactions last
+        if (wasEnabled) {
             SYSTEM.unsubscribe(
                 block.chainid,
                 LEGACY_SYSTEM_ADDR,
-                activeCronTopic0,
+                oldTopic0,
                 REACTIVE_IGNORE,
                 REACTIVE_IGNORE,
                 REACTIVE_IGNORE
             );
         }
         _coverDebt();
-        cronEnabled = true;
-        activeCronTopic0 = topic0;
         SYSTEM.subscribe(
             block.chainid,
             LEGACY_SYSTEM_ADDR,
@@ -235,15 +374,19 @@ contract OmniGuardReactive is AbstractReactive {
             REACTIVE_IGNORE,
             REACTIVE_IGNORE
         );
-        emit CronSubscriptionUpdated(true, topic0);
     }
 
     /// @notice Disables protocol CRON subscription to prevent idle lREACT charges.
     function disableCron() external onlyOwner {
         if (!cronEnabled) return;
         uint256 oldTopic0 = activeCronTopic0;
+
+        // Effects first (CEI)
         cronEnabled = false;
         activeCronTopic0 = 0;
+        emit CronSubscriptionUpdated(false, oldTopic0);
+
+        // Interactions last
         SYSTEM.unsubscribe(
             block.chainid,
             LEGACY_SYSTEM_ADDR,
@@ -252,16 +395,23 @@ contract OmniGuardReactive is AbstractReactive {
             REACTIVE_IGNORE,
             REACTIVE_IGNORE
         );
-        emit CronSubscriptionUpdated(false, oldTopic0);
     }
 
     /**
      * @notice Registers a new autonomous protection or rebalancing rule.
-     * @dev Can be authored directly via natural-language compilation in the OmniGuard AI dashboard.
+     * @dev Gated to owner or owner-allowlisted creators; destination vault must be allowlisted and active rule caps enforced.
      */
-    function createRule(OmniGuardTypes.CreateRuleParams calldata params_) external returns (uint256 ruleId) {
+    function createRule(OmniGuardTypes.CreateRuleParams calldata params_)
+        external
+        onlyRuleCreator
+        whenNotPaused
+        returns (uint256 ruleId)
+    {
         if (params_.destinationChainId == 0) revert InvalidChainId();
         if (params_.destinationVault == address(0)) revert InvalidAddress();
+        if (!allowedDestinationVaults[params_.destinationChainId][params_.destinationVault]) {
+            revert DestinationVaultNotAllowed(params_.destinationChainId, params_.destinationVault);
+        }
         if (
             params_.callbackGasLimit < OmniGuardTypes.MIN_CALLBACK_GAS_LIMIT
                 || params_.callbackGasLimit > OmniGuardTypes.MAX_CALLBACK_GAS_LIMIT
@@ -281,12 +431,32 @@ contract OmniGuardReactive is AbstractReactive {
             revert InvalidBps(params_.hedgeBps);
         }
 
+        _validateRuleAndAction(params_);
+
+        if (activeRulesCount >= OmniGuardTypes.MAX_TOTAL_ACTIVE_RULES) {
+            revert RuleCapExceeded(OmniGuardTypes.MAX_TOTAL_ACTIVE_RULES);
+        }
+
+        address targetVault = params_.monitoredVault;
+        if (params_.kind == OmniGuardTypes.RuleKind.HEALTH_FACTOR_RESCUE) {
+            targetVault = params_.monitoredVault == address(0) ? params_.destinationVault : params_.monitoredVault;
+            if (_vaultRuleIds[targetVault].length >= OmniGuardTypes.MAX_ACTIVE_RULES_PER_VAULT) {
+                revert RuleCapExceeded(OmniGuardTypes.MAX_ACTIVE_RULES_PER_VAULT);
+            }
+        } else {
+            if (_marketRuleIds[params_.marketId].length >= OmniGuardTypes.MAX_ACTIVE_RULES_PER_MARKET) {
+                revert RuleCapExceeded(OmniGuardTypes.MAX_ACTIVE_RULES_PER_MARKET);
+            }
+        }
+
         ruleId = nextRuleId++;
+        activeRulesCount++;
+
         rules[ruleId] = OmniGuardTypes.GuardRule({
             ruleId: ruleId,
             owner: msg.sender,
             marketId: params_.marketId,
-            monitoredVault: params_.monitoredVault,
+            monitoredVault: targetVault,
             destinationChainId: params_.destinationChainId,
             destinationVault: params_.destinationVault,
             kind: params_.kind,
@@ -306,8 +476,6 @@ contract OmniGuardReactive is AbstractReactive {
         });
 
         if (params_.kind == OmniGuardTypes.RuleKind.HEALTH_FACTOR_RESCUE) {
-            address targetVault = params_.monitoredVault == address(0) ? params_.destinationVault : params_.monitoredVault;
-            rules[ruleId].monitoredVault = targetVault;
             _vaultRuleIds[targetVault].push(ruleId);
         } else {
             _marketRuleIds[params_.marketId].push(ruleId);
@@ -324,21 +492,52 @@ contract OmniGuardReactive is AbstractReactive {
         );
     }
 
-    /// @notice Activates or pauses an existing rule.
+    /// @notice Activates or deactivates an existing rule, pruning deactivated IDs via swap-and-pop to preserve gas bounds.
     function setRuleActive(uint256 ruleId_, bool active_) external {
         OmniGuardTypes.GuardRule storage rule = rules[ruleId_];
         if (rule.ruleId == 0) revert RuleNotFound(ruleId_);
         if (msg.sender != rule.owner && msg.sender != owner) revert NotRuleOwner(ruleId_, msg.sender);
-        rule.active = active_;
+        if (rule.active == active_) return;
+
+        if (active_) {
+            if (!allowedDestinationVaults[rule.destinationChainId][rule.destinationVault]) {
+                revert DestinationVaultNotAllowed(rule.destinationChainId, rule.destinationVault);
+            }
+            if (activeRulesCount >= OmniGuardTypes.MAX_TOTAL_ACTIVE_RULES) {
+                revert RuleCapExceeded(OmniGuardTypes.MAX_TOTAL_ACTIVE_RULES);
+            }
+            if (rule.kind == OmniGuardTypes.RuleKind.HEALTH_FACTOR_RESCUE) {
+                if (_vaultRuleIds[rule.monitoredVault].length >= OmniGuardTypes.MAX_ACTIVE_RULES_PER_VAULT) {
+                    revert RuleCapExceeded(OmniGuardTypes.MAX_ACTIVE_RULES_PER_VAULT);
+                }
+                _vaultRuleIds[rule.monitoredVault].push(ruleId_);
+            } else {
+                if (_marketRuleIds[rule.marketId].length >= OmniGuardTypes.MAX_ACTIVE_RULES_PER_MARKET) {
+                    revert RuleCapExceeded(OmniGuardTypes.MAX_ACTIVE_RULES_PER_MARKET);
+                }
+                _marketRuleIds[rule.marketId].push(ruleId_);
+            }
+            activeRulesCount++;
+            rule.active = true;
+        } else {
+            rule.active = false;
+            activeRulesCount--;
+            if (rule.kind == OmniGuardTypes.RuleKind.HEALTH_FACTOR_RESCUE) {
+                _removeRuleId(_vaultRuleIds[rule.monitoredVault], ruleId_);
+            } else {
+                _removeRuleId(_marketRuleIds[rule.marketId], ruleId_);
+            }
+        }
+
         emit GuardRuleStatusChanged(ruleId_, active_);
     }
 
-    /// @notice Returns rule IDs attached to a given marketId.
+    /// @notice Returns active rule IDs attached to a given marketId.
     function getMarketRuleIds(bytes32 marketId_) external view returns (uint256[] memory) {
         return _marketRuleIds[marketId_];
     }
 
-    /// @notice Returns rule IDs attached to a given monitoredVault.
+    /// @notice Returns active rule IDs attached to a given monitoredVault.
     function getVaultRuleIds(address vault_) external view returns (uint256[] memory) {
         return _vaultRuleIds[vault_];
     }
@@ -353,8 +552,7 @@ contract OmniGuardReactive is AbstractReactive {
         effectiveDrawdownBps = rule.maxDrawdownBps;
 
         OmniGuardTypes.NeuralSnapshot storage snap = latestNeuralByMarket[rule.marketId];
-        bool neuralFresh = snap.signer != address(0) && snap.validUntil >= referenceTimestamp_;
-        if (!neuralFresh) {
+        if (!_isNeuralSnapshotTrustedAndFresh(snap, referenceTimestamp_)) {
             return (effectiveDrawdownBps, 0);
         }
 
@@ -363,15 +561,12 @@ contract OmniGuardReactive is AbstractReactive {
             return (effectiveDrawdownBps, activeRiskScoreBps);
         }
 
-        // Tighten drawdown tolerance dynamically under elevated neural risk regimes:
-        // VOLATILE -> 80% of base threshold (20% tighter)
-        // CASCADE_CRITICAL -> 65% of base threshold (35% tighter)
         if (snap.regime == OmniGuardTypes.RiskRegime.CASCADE_CRITICAL) {
-            effectiveDrawdownBps = uint16((uint256(effectiveDrawdownBps) * 65) / 100);
+            effectiveDrawdownBps = uint16((uint256(effectiveDrawdownBps) * CASCADE_TIGHTEN_PCT) / PERCENT_BASE);
         } else if (snap.regime == OmniGuardTypes.RiskRegime.VOLATILE) {
-            effectiveDrawdownBps = uint16((uint256(effectiveDrawdownBps) * 80) / 100);
+            effectiveDrawdownBps = uint16((uint256(effectiveDrawdownBps) * VOLATILE_TIGHTEN_PCT) / PERCENT_BASE);
         } else if (snap.regime == OmniGuardTypes.RiskRegime.ELEVATED) {
-            effectiveDrawdownBps = uint16((uint256(effectiveDrawdownBps) * 90) / 100);
+            effectiveDrawdownBps = uint16((uint256(effectiveDrawdownBps) * ELEVATED_TIGHTEN_PCT) / PERCENT_BASE);
         }
         if (effectiveDrawdownBps == 0) {
             effectiveDrawdownBps = 1;
@@ -381,30 +576,30 @@ contract OmniGuardReactive is AbstractReactive {
     /**
      * @inheritdoc IReactive
      * @notice Invoked exclusively by Reactive Network SYSTEM (`0x8888...8888`) whenever a subscribed event fires.
-     * @dev Strictly validates `opCode` before decoding `log_.data`, never reverts on non-matching logs,
-     *      and enforces timestamp-only cooldowns & deadlines.
+     * @dev Returns silently when paused or when a log does not match, avoiding `ReactiveContractReverted` gas charges.
      */
     function react(LogRecord calldata log_) external override onlySystem {
-        totalEventsProcessed++;
-        lastReactionTimestamp = uint64(block.timestamp);
+        if (paused) return;
 
-        if (log_.topic0 == OmniGuardTypes.PRICE_UPDATED_TOPIC0 && log_.opCode == 2) {
+        if (log_.topic0 == OmniGuardTypes.PRICE_UPDATED_TOPIC0 && log_.opCode == OPCODE_PRICE_UPDATED) {
             _handlePriceUpdated(log_);
             return;
         }
 
-        if (log_.topic0 == OmniGuardTypes.HEALTH_FACTOR_ALERT_TOPIC0 && log_.opCode == 3) {
+        if (log_.topic0 == OmniGuardTypes.HEALTH_FACTOR_ALERT_TOPIC0 && log_.opCode == OPCODE_THREE_TOPICS) {
             _handleHealthFactorAlert(log_);
             return;
         }
 
-        if (log_.topic0 == OmniGuardTypes.NEURAL_REGIME_COMMITTED_TOPIC0 && log_.opCode == 3) {
+        if (log_.topic0 == OmniGuardTypes.NEURAL_REGIME_COMMITTED_TOPIC0 && log_.opCode == OPCODE_THREE_TOPICS) {
             _handleNeuralRegimeCommitted(log_);
             return;
         }
 
         if (cronEnabled && log_.contractAddress == LEGACY_SYSTEM_ADDR && log_.topic0 == activeCronTopic0) {
+            totalEventsProcessed++;
             totalCronTicks++;
+            lastReactionTimestamp = uint64(block.timestamp);
             emit CronHeartbeatObserved(block.number, uint64(block.timestamp));
             return;
         }
@@ -413,7 +608,6 @@ contract OmniGuardReactive is AbstractReactive {
     }
 
     function _handlePriceUpdated(LogRecord calldata log_) internal {
-        // Authenticate origin contract source.
         bool fromPrimary = log_.chainId == primaryOriginChainId && log_.contractAddress == primaryOriginFeed;
         bool fromSecondary = secondaryOriginFeed != address(0) && log_.chainId == secondaryOriginChainId
             && log_.contractAddress == secondaryOriginFeed;
@@ -423,12 +617,16 @@ contract OmniGuardReactive is AbstractReactive {
         (uint256 priceE8,, int256 changeBps,, uint64 originTs) =
             abi.decode(log_.data, (uint256, uint256, int256, uint256, uint64));
 
+        totalEventsProcessed++;
+        lastReactionTimestamp = uint64(block.timestamp);
         latestPriceByChain[marketId][log_.chainId] = priceE8;
         latestPriceTimestampByChain[marketId][log_.chainId] = originTs;
         lastOriginTimestamp = originTs;
 
         uint256[] storage ids = _marketRuleIds[marketId];
         uint256 len = ids.length;
+        PendingCallback[] memory queue = new PendingCallback[](len);
+        uint256 queued = 0;
 
         for (uint256 i = 0; i < len; ++i) {
             OmniGuardTypes.GuardRule storage rule = rules[ids[i]];
@@ -436,11 +634,21 @@ contract OmniGuardReactive is AbstractReactive {
             if (rule.expiresAt != 0 && originTs > rule.expiresAt) continue;
 
             if (rule.kind == OmniGuardTypes.RuleKind.STOP_LOSS_HEDGE) {
-                _evaluateStopLossRule(rule, log_, marketId, priceE8, changeBps, originTs);
+                (bool shouldDispatch, PendingCallback memory cb) =
+                    _evaluateStopLossRule(rule, log_, marketId, priceE8, changeBps, originTs);
+                if (shouldDispatch) {
+                    queue[queued++] = cb;
+                }
             } else if (rule.kind == OmniGuardTypes.RuleKind.CROSS_CHAIN_REBALANCE) {
-                _evaluateCrossChainSpreadRule(rule, log_, marketId, originTs);
+                (bool shouldDispatch, PendingCallback memory cb) =
+                    _evaluateCrossChainSpreadRule(rule, log_, marketId, originTs);
+                if (shouldDispatch) {
+                    queue[queued++] = cb;
+                }
             }
         }
+
+        _flushCallbacks(queue, queued);
     }
 
     function _evaluateStopLossRule(
@@ -450,28 +658,29 @@ contract OmniGuardReactive is AbstractReactive {
         uint256 priceE8_,
         int256 changeBps_,
         uint64 originTs_
-    ) internal {
+    ) internal returns (bool shouldDispatch, PendingCallback memory cb) {
         (uint16 effectiveDrawdownBps, uint16 aiRiskScoreBps) = getEffectiveDrawdownBps(rule.ruleId, originTs_);
 
         bool floorBreached = rule.priceFloorE8 > 0 && priceE8_ <= rule.priceFloorE8;
         bool drawdownBreached =
             effectiveDrawdownBps > 0 && changeBps_ < 0 && uint256(-changeBps_) >= uint256(effectiveDrawdownBps);
 
-        if (!floorBreached && !drawdownBreached) return;
-        if (!_consumeEligibility(rule, log_, originTs_)) return;
+        if (!floorBreached && !drawdownBreached) return (false, cb);
+        if (!_consumeEligibility(rule, log_, originTs_)) return (false, cb);
 
         uint16 effectiveHedgeBps = rule.hedgeBps;
         OmniGuardTypes.NeuralSnapshot storage snap = latestNeuralByMarket[marketId_];
         if (
-            rule.adaptiveAiEnabled && snap.signer != address(0) && snap.validUntil >= originTs_
+            rule.adaptiveAiEnabled && _isNeuralSnapshotTrustedAndFresh(snap, originTs_)
                 && snap.recommendedHedgeBps > effectiveHedgeBps
         ) {
             effectiveHedgeBps = snap.recommendedHedgeBps;
         }
 
-        _dispatchProtectionCallback(
-            rule, marketId_, priceE8_, effectiveHedgeBps, aiRiskScoreBps, originTs_, log_.txHash
+        cb = _prepareProtectionCallback(
+            rule, marketId_, priceE8_, effectiveHedgeBps, aiRiskScoreBps, originTs_, log_.txHash, log_.logIndex
         );
+        return (true, cb);
     }
 
     function _evaluateCrossChainSpreadRule(
@@ -479,22 +688,33 @@ contract OmniGuardReactive is AbstractReactive {
         LogRecord calldata log_,
         bytes32 marketId_,
         uint64 originTs_
-    ) internal {
-        if (secondaryOriginChainId == 0) return;
+    ) internal returns (bool shouldDispatch, PendingCallback memory cb) {
+        if (secondaryOriginChainId == 0) return (false, cb);
 
         uint256 primaryPrice = latestPriceByChain[marketId_][primaryOriginChainId];
         uint256 secondaryPrice = latestPriceByChain[marketId_][secondaryOriginChainId];
-        if (primaryPrice == 0 || secondaryPrice == 0) return;
+        if (primaryPrice == 0 || secondaryPrice == 0) return (false, cb);
+
+        uint64 primaryTs = latestPriceTimestampByChain[marketId_][primaryOriginChainId];
+        uint64 secondaryTs = latestPriceTimestampByChain[marketId_][secondaryOriginChainId];
+        uint64 legSkew = primaryTs >= secondaryTs ? primaryTs - secondaryTs : secondaryTs - primaryTs;
+        bool primaryStale = originTs_ > primaryTs && (originTs_ - primaryTs) > OmniGuardTypes.MAX_SPREAD_LEG_AGE_SECONDS;
+        bool secondaryStale =
+            originTs_ > secondaryTs && (originTs_ - secondaryTs) > OmniGuardTypes.MAX_SPREAD_LEG_AGE_SECONDS;
+        if (legSkew > OmniGuardTypes.MAX_SPREAD_LEG_AGE_SECONDS || primaryStale || secondaryStale) {
+            emit StaleSpreadLegSkipped(rule.ruleId, marketId_, primaryTs, secondaryTs);
+            return (false, cb);
+        }
 
         uint256 diff = primaryPrice >= secondaryPrice ? primaryPrice - secondaryPrice : secondaryPrice - primaryPrice;
         uint256 minPrice = primaryPrice < secondaryPrice ? primaryPrice : secondaryPrice;
         uint256 spreadBps = (diff * OmniGuardTypes.BPS_DENOMINATOR) / minPrice;
 
-        if (spreadBps < rule.spreadThresholdBps) return;
-        if (!_consumeEligibility(rule, log_, originTs_)) return;
+        if (spreadBps < rule.spreadThresholdBps) return (false, cb);
+        if (!_consumeEligibility(rule, log_, originTs_)) return (false, cb);
 
         bytes memory payload = abi.encodeWithSignature(
-            "executeCrossChainRebalance(address,uint256,bytes32,uint256,uint256,uint16,uint64,uint256)",
+            "executeCrossChainRebalance(address,uint256,bytes32,uint256,uint256,uint16,uint64,uint256,uint256)",
             address(0), // Reserved placeholder: overwritten by Reactive Omni with address(this)
             rule.ruleId,
             marketId_,
@@ -502,19 +722,10 @@ contract OmniGuardReactive is AbstractReactive {
             secondaryPrice,
             rule.hedgeBps,
             originTs_,
-            log_.txHash
+            log_.txHash,
+            log_.logIndex
         );
 
-        SYSTEM.requestCallbackV_1_0(
-            ISystemContract.CallbackConfiguration_V_1_0({
-                chainId: rule.destinationChainId,
-                recipient: rule.destinationVault,
-                gasLimit: rule.callbackGasLimit,
-                payload: payload
-            })
-        );
-
-        totalCallbacksRequested++;
         emit ReactionDispatched(
             rule.ruleId,
             rule.destinationChainId,
@@ -527,6 +738,14 @@ contract OmniGuardReactive is AbstractReactive {
             uint64(block.timestamp),
             log_.txHash
         );
+
+        cb = PendingCallback({
+            chainId: rule.destinationChainId,
+            recipient: rule.destinationVault,
+            gasLimit: rule.callbackGasLimit,
+            payload: payload
+        });
+        return (true, cb);
     }
 
     function _handleHealthFactorAlert(LogRecord calldata log_) internal {
@@ -534,10 +753,15 @@ contract OmniGuardReactive is AbstractReactive {
 
         address monitoredVault = address(uint160(log_.topic1));
         (uint256 healthFactorBps,,, uint64 originTs) = abi.decode(log_.data, (uint256, uint256, uint256, uint64));
+
+        totalEventsProcessed++;
+        lastReactionTimestamp = uint64(block.timestamp);
         lastOriginTimestamp = originTs;
 
         uint256[] storage ids = _vaultRuleIds[monitoredVault];
         uint256 len = ids.length;
+        PendingCallback[] memory queue = new PendingCallback[](len);
+        uint256 queued = 0;
 
         for (uint256 i = 0; i < len; ++i) {
             OmniGuardTypes.GuardRule storage rule = rules[ids[i]];
@@ -547,13 +771,12 @@ contract OmniGuardReactive is AbstractReactive {
             uint256 effectiveMinHf = rule.minHealthFactorBps;
             uint16 aiRiskScoreBps = 0;
             OmniGuardTypes.NeuralSnapshot storage snap = latestNeuralByMarket[rule.marketId];
-            if (rule.adaptiveAiEnabled && snap.signer != address(0) && snap.validUntil >= originTs) {
+            if (rule.adaptiveAiEnabled && _isNeuralSnapshotTrustedAndFresh(snap, originTs)) {
                 aiRiskScoreBps = snap.riskScoreBps;
-                // In critical neural regimes, rescue earlier (raise minimum safe HF by +500 bps = +0.05x).
                 if (snap.regime == OmniGuardTypes.RiskRegime.CASCADE_CRITICAL) {
-                    effectiveMinHf += 500;
+                    effectiveMinHf += HF_CASCADE_BONUS_BPS;
                 } else if (snap.regime == OmniGuardTypes.RiskRegime.VOLATILE) {
-                    effectiveMinHf += 250;
+                    effectiveMinHf += HF_VOLATILE_BONUS_BPS;
                 }
             }
 
@@ -561,10 +784,12 @@ contract OmniGuardReactive is AbstractReactive {
             if (!_consumeEligibility(rule, log_, originTs)) continue;
 
             uint256 refPrice = latestPriceByChain[rule.marketId][primaryOriginChainId];
-            _dispatchProtectionCallback(
-                rule, rule.marketId, refPrice, rule.hedgeBps, aiRiskScoreBps, originTs, log_.txHash
+            queue[queued++] = _prepareProtectionCallback(
+                rule, rule.marketId, refPrice, rule.hedgeBps, aiRiskScoreBps, originTs, log_.txHash, log_.logIndex
             );
         }
+
+        _flushCallbacks(queue, queued);
     }
 
     function _handleNeuralRegimeCommitted(LogRecord calldata log_) internal {
@@ -576,8 +801,12 @@ contract OmniGuardReactive is AbstractReactive {
             abi.decode(log_.data, (uint8, uint16, uint16, uint64, uint64));
 
         if (regimeRaw > uint8(OmniGuardTypes.RiskRegime.CASCADE_CRITICAL)) return;
+        if (trustedNeuralSigner != address(0) && signer != trustedNeuralSigner) return;
+
         OmniGuardTypes.RiskRegime regime = OmniGuardTypes.RiskRegime(regimeRaw);
 
+        totalEventsProcessed++;
+        lastReactionTimestamp = uint64(block.timestamp);
         latestNeuralByMarket[marketId] = OmniGuardTypes.NeuralSnapshot({
             regime: regime,
             riskScoreBps: riskScoreBps,
@@ -594,6 +823,8 @@ contract OmniGuardReactive is AbstractReactive {
         uint256[] storage ids = _marketRuleIds[marketId];
         uint256 len = ids.length;
         uint256 refPrice = latestPriceByChain[marketId][primaryOriginChainId];
+        PendingCallback[] memory queue = new PendingCallback[](len);
+        uint256 queued = 0;
 
         for (uint256 i = 0; i < len; ++i) {
             OmniGuardTypes.GuardRule storage rule = rules[ids[i]];
@@ -606,10 +837,12 @@ contract OmniGuardReactive is AbstractReactive {
             if (!_consumeEligibility(rule, log_, emittedAt)) continue;
 
             uint16 effectiveHedgeBps = recommendedHedgeBps > rule.hedgeBps ? recommendedHedgeBps : rule.hedgeBps;
-            _dispatchProtectionCallback(
-                rule, marketId, refPrice, effectiveHedgeBps, riskScoreBps, emittedAt, log_.txHash
+            queue[queued++] = _prepareProtectionCallback(
+                rule, marketId, refPrice, effectiveHedgeBps, riskScoreBps, emittedAt, log_.txHash, log_.logIndex
             );
         }
+
+        _flushCallbacks(queue, queued);
     }
 
     function _consumeEligibility(OmniGuardTypes.GuardRule storage rule, LogRecord calldata log_, uint64 originTs_)
@@ -633,17 +866,18 @@ contract OmniGuardReactive is AbstractReactive {
         return true;
     }
 
-    function _dispatchProtectionCallback(
+    function _prepareProtectionCallback(
         OmniGuardTypes.GuardRule storage rule,
         bytes32 marketId_,
         uint256 triggerPriceE8_,
         uint16 effectiveHedgeBps_,
         uint16 aiRiskScoreBps_,
         uint64 originTs_,
-        uint256 originTxHash_
-    ) internal {
+        uint256 originTxHash_,
+        uint256 logIndex_
+    ) internal returns (PendingCallback memory cb) {
         bytes memory payload = abi.encodeWithSignature(
-            "executeProtection(address,uint256,uint8,bytes32,uint256,uint16,uint16,uint64,uint256)",
+            "executeProtection(address,uint256,uint8,bytes32,uint256,uint16,uint16,uint64,uint256,uint256)",
             address(0), // Reserved placeholder: overwritten by Reactive Omni with address(this)
             rule.ruleId,
             uint8(rule.actionType),
@@ -652,19 +886,10 @@ contract OmniGuardReactive is AbstractReactive {
             effectiveHedgeBps_,
             aiRiskScoreBps_,
             originTs_,
-            originTxHash_
+            originTxHash_,
+            logIndex_
         );
 
-        SYSTEM.requestCallbackV_1_0(
-            ISystemContract.CallbackConfiguration_V_1_0({
-                chainId: rule.destinationChainId,
-                recipient: rule.destinationVault,
-                gasLimit: rule.callbackGasLimit,
-                payload: payload
-            })
-        );
-
-        totalCallbacksRequested++;
         emit ReactionDispatched(
             rule.ruleId,
             rule.destinationChainId,
@@ -677,12 +902,97 @@ contract OmniGuardReactive is AbstractReactive {
             uint64(block.timestamp),
             originTxHash_
         );
+
+        cb = PendingCallback({
+            chainId: rule.destinationChainId,
+            recipient: rule.destinationVault,
+            gasLimit: rule.callbackGasLimit,
+            payload: payload
+        });
+    }
+
+    function _flushCallbacks(PendingCallback[] memory queue_, uint256 count_) internal {
+        if (count_ == 0) return;
+
+        // Effects completed strictly BEFORE interactions (CEI)
+        totalCallbacksRequested += count_;
+
+        for (uint256 i = 0; i < count_; ++i) {
+            PendingCallback memory cb = queue_[i];
+            SYSTEM.requestCallbackV_1_0(
+                ISystemContract.CallbackConfiguration_V_1_0({
+                    chainId: cb.chainId,
+                    recipient: cb.recipient,
+                    gasLimit: cb.gasLimit,
+                    payload: cb.payload
+                })
+            );
+        }
+    }
+
+    function _validateRuleAndAction(OmniGuardTypes.CreateRuleParams calldata params_) internal pure {
+        if (params_.kind == OmniGuardTypes.RuleKind.STOP_LOSS_HEDGE) {
+            if (
+                params_.actionType != OmniGuardTypes.ActionType.HEDGE_TO_STABLE
+                    && params_.actionType != OmniGuardTypes.ActionType.CIRCUIT_BREAKER_PAUSE
+            ) {
+                revert IncompatibleRuleAction(params_.kind, params_.actionType);
+            }
+            if (params_.priceFloorE8 == 0 && params_.maxDrawdownBps == 0) {
+                revert MissingTriggerCondition(params_.kind);
+            }
+        } else if (params_.kind == OmniGuardTypes.RuleKind.HEALTH_FACTOR_RESCUE) {
+            if (params_.actionType != OmniGuardTypes.ActionType.DELEVERAGE_COLLATERAL) {
+                revert IncompatibleRuleAction(params_.kind, params_.actionType);
+            }
+            if (params_.minHealthFactorBps == 0) {
+                revert MissingTriggerCondition(params_.kind);
+            }
+        } else if (params_.kind == OmniGuardTypes.RuleKind.AI_REGIME_ESCALATION) {
+            if (
+                params_.actionType != OmniGuardTypes.ActionType.CIRCUIT_BREAKER_PAUSE
+                    && params_.actionType != OmniGuardTypes.ActionType.HEDGE_TO_STABLE
+            ) {
+                revert IncompatibleRuleAction(params_.kind, params_.actionType);
+            }
+            if (params_.aiRiskThresholdBps == 0) {
+                revert MissingTriggerCondition(params_.kind);
+            }
+        } else if (params_.kind == OmniGuardTypes.RuleKind.CROSS_CHAIN_REBALANCE) {
+            if (params_.actionType != OmniGuardTypes.ActionType.CROSS_CHAIN_REBALANCE) {
+                revert IncompatibleRuleAction(params_.kind, params_.actionType);
+            }
+            if (params_.spreadThresholdBps == 0) {
+                revert MissingTriggerCondition(params_.kind);
+            }
+        }
+    }
+
+    function _isNeuralSnapshotTrustedAndFresh(OmniGuardTypes.NeuralSnapshot storage snap, uint64 referenceTimestamp_)
+        internal
+        view
+        returns (bool)
+    {
+        if (snap.signer == address(0) || snap.validUntil < referenceTimestamp_) return false;
+        if (trustedNeuralSigner != address(0) && snap.signer != trustedNeuralSigner) return false;
+        return true;
+    }
+
+    function _removeRuleId(uint256[] storage list_, uint256 ruleId_) internal {
+        uint256 len = list_.length;
+        for (uint256 i = 0; i < len; ++i) {
+            if (list_[i] == ruleId_) {
+                list_[i] = list_[len - 1];
+                list_.pop();
+                return;
+            }
+        }
     }
 
     function _cronTopicFor(uint256 interval_) internal pure returns (uint256) {
-        if (interval_ == 10) return CRON10_TOPIC_0;
-        if (interval_ == 100) return CRON100_TOPIC_0;
-        if (interval_ == 1000) return CRON1000_TOPIC_0;
+        if (interval_ == CRON_INTERVAL_10) return CRON10_TOPIC_0;
+        if (interval_ == CRON_INTERVAL_100) return CRON100_TOPIC_0;
+        if (interval_ == CRON_INTERVAL_1000) return CRON1000_TOPIC_0;
         revert UnsupportedCronInterval(interval_);
     }
 }

@@ -1,44 +1,60 @@
-# OmniGuard AI
+# OmniGuard AI (V2)
 
-**Autonomous Cross-Chain DeFi Risk Sentinel & Neural Policy Co-Pilot powered by Reactive Omni (~1s CometBFT Finality)**
+**Autonomous Cross-Chain DeFi Risk Sentinel & Security-Hardened Guardrail Engine on Reactive Omni (~1s CometBFT Finality)**
 
-Built for the **DoraHacks Reactive Omni Buildathon** targeting:
-- **Every Second Counts** — Sub-3-second cross-chain stop-loss hedging, liquidation rescue, and Base Sepolia (200ms) &harr; Unichain Sepolia (1s) liquidity rebalancing via Reactive Lasna (~1s CometBFT finality).
-- **Set It and Forget It** — Natural-language rule authoring studio that compiles plain-English protection intents directly into `OmniGuardReactive.createRule()` ABI calldata with automatic Base Sepolia 200ms timestamp safety enforcement.
-- **Reactive Meets AI** — A live 2-layer neural network (`OmniRisk-MLP-7x12x4`) running directly inside the execution loop, classifying market stress regimes (`CALM` / `ELEVATED` / `VOLATILE` / `CASCADE_CRITICAL`), signing EIP-712 advisements verified on-chain via `ecrecover`, and dynamically tightening Reactive drawdown thresholds and emergency hedge ratios.
+Built for the **DoraHacks Reactive Omni Buildathon** (Track: **Every Second Counts** · BUIDL [#51789](https://dorahacks.io/build/51789)).
+
+| Judge Resource | Direct Link |
+|---|---|
+| **Public 1-Click Live RPC Workbench & Adversarial Breaker Lab** | **[https://alphonshhhomenicmtu.github.io/omniguard-ai/](https://alphonshhhomenicmtu.github.io/omniguard-ai/)** |
+| **Live `/diag` 3-Chain RPC & Self-Test Panel** | **[https://alphonshhhomenicmtu.github.io/omniguard-ai/diag/](https://alphonshhhomenicmtu.github.io/omniguard-ai/diag/)** |
+| **1080p Demo Video (2m 30s)** | **[https://youtu.be/pggBrUXMLTo](https://youtu.be/pggBrUXMLTo)** |
+| **10-Slide Technical Pitch Deck (PDF)** | **[docs/omniguard-deck.pdf](docs/omniguard-deck.pdf)** |
 
 ---
 
-## Live Verified Testnet Deployment & Cross-Chain Proofs (Reactive Omni)
+## Live Verified On-Chain Executions (`Base Sepolia 84532 -> Reactive Lasna 5318007 -> Unichain Sepolia 1301`)
 
-All contracts are deployed live across **Base Sepolia (84532)**, **Reactive Lasna (5318007)**, and **Unichain Sepolia (1301)** (see [`deployments/testnet.json`](deployments/testnet.json) and [`deployments/last-proof.json`](deployments/last-proof.json)):
+Two full end-to-end Reactive Omni loops are confirmed on-chain and live-readable directly from public RPCs inside the **Judge Receipt Verifier** tab (see [`deployments/testnet.json`](deployments/testnet.json) and [`deployments/last-proof.json`](deployments/last-proof.json)):
+
+| Confirmed Loop | Origin Tx (`Base Sepolia 84532`) | Reactive `react()` Tx (`Lasna 5318007`) | Destination Callback Tx (`Unichain Sepolia 1301`) | Block-Timestamp Delta | Decoded Vault Outcome |
+|---|---|---|---|---:|---|
+| **Loop #1: Stop-Loss Hedge (Rule #1, `-6.00%` crash, `50%` hedge)** | [`0x1155b750...3243dd2`](https://sepolia.basescan.org/tx/0x1155b750cbe38ef1ede5727ef1819f7b8fd50625366c836a887e555a83243dd2) (blk `62980986`) | [`0x34598c2f...5d2e9f`](https://lasna.reactscan.net/tx/0x34598c2fb358b08bfb9ea5e6213f9377c33226db193fd29f4f0a0559355d2e9f) (blk `9131928`) | [`0xcb2cb194...8b1f4c`](https://sepolia.uniscan.xyz/tx/0xcb2cb194a1c4a561e911e253832021d8a9c3e8b6be3de9a87090f7e7fb8b1f4c) (blk `68665640`, Receipt `#0`) | **2 seconds** | `$100k -> $50k` WETH, `$25k -> $75k` USDC, `$60k` debt |
+| **Loop #2: Closed-Loop EIP-712 Neural Circuit Breaker (Rule #3, `91.2%` risk, `65%` shift)** | [`0xb11c83b3...8b7f37`](https://sepolia.basescan.org/tx/0xb11c83b3b5893ab11209c8f2fb0efd62c3f25bc3d7e2585737cd360e288b7f37) (EIP-712 `ecrecover`) | [`0xdb6d3164...21c428`](https://lasna.reactscan.net/tx/0xdb6d3164304d8e7c24e92803bd36e0e0c3b70e3e0b443c1e4113adc97f21c428) (blk `9131931`) | [`0x60a45077...7783c2`](https://sepolia.uniscan.xyz/tx/0x60a450775431b9f27b2065b138cc6cfd737642ad31b16b3f92efd1e9ba7783c2) (blk `68665643`, Receipt `#1`) | **3 seconds** | `$50k -> $17.5k` WETH, `$75k -> $107.5k` USDC, `$60k` debt (`~1.94x` HF) |
+
+> **Honest Latency Reporting:** On-chain block-timestamp deltas (`callbackTimestamp - originTimestamp`) are **2s** (Loop #1) and **3s** (Loop #2). Total end-to-end script wall-clock time recorded in `deployments/last-proof.json` (including Base Sepolia RPC broadcast confirmation, Reactive Lasna relay, and 1,000ms destination log polling) is **7,155 ms**. Both figures are displayed side-by-side in the live Judge Workbench.
 
 ### Deployed Contracts (Deployer: `0x06ECf94D9baAFB70daE7A499135e35D1156d4c03`)
 
 | Network | Chain ID | Contract | Deployed Address | Deployment Tx |
 |---|---:|---|---|---|
-| **Base Sepolia** | `84532` | `OmniMarketFeed` (Primary Origin) | [`0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80`](https://sepolia.basescan.org/address/0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80) | `0x2a2f09da274a30772c8e182a6146cdba8fc2226fc9e591c295cffacde38b7df9` |
-| **Unichain Sepolia** | `1301` | `OmniMarketFeed` (Secondary Origin) | [`0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80`](https://sepolia.uniscan.xyz/address/0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80) | `0x7c8d8e65d6d5526bd6ba6a5f222fb31ebd3d06c77ec3105a7be5b0a123b18345` |
-| **Reactive Lasna** | `5318007` | `OmniGuardReactive` (`AbstractReactive`) | [`0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6`](https://lasna.reactscan.net/address/0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6) | `0x7eeeaeefaa31ce90ea9988419babd8456d2ff488d00be36303ba1f20024c471d` |
-| **Base Sepolia** | `84532` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.basescan.org/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | `0x1d8e2c2514fe57b6fa7e6058cef87338c1f2736b3638bcb8d329e31082d4439e` |
-| **Unichain Sepolia** | `1301` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.uniscan.xyz/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | `0xec51c6a6f610b00a323132dd5d6ca2804059ec67a148df345229f48853250f84` |
-
-### Verified Full-Loop Cross-Chain Executions (`Base Sepolia 84532 -> Reactive Lasna 5318007 -> Unichain Sepolia 1301`)
-
-| Loop | Trigger Event (Base Sepolia 84532) | Reactive `react()` Tx (Lasna 5318007) | Destination Callback Tx (Unichain Sepolia 1301) | Measured On-Chain Latency (`cbTs - originTs`) |
-|---|---|---|---|---:|
-| **Loop 1: Stop-Loss Hedge (Rule #1, 50% hedge)** | `0x1155b750cbe38ef1ede5727ef1819f7b8fd50625366c836a887e555a83243dd2` (block `62980986`, `-6.00%` crash) | `0x34598c2fb358b08bfb9ea5e6213f9377c33226db193fd29f4f0a0559355d2e9f` (block `9131928`) | `0xcb2cb194a1c4a561e911e253832021d8a9c3e8b6be3de9a87090f7e7fb8b1f4c` (block `68665640`, receipt `#0`) | **2 seconds** |
-| **Loop 2: Closed-Loop AI Circuit Breaker (Rule #3, EIP-712 `CASCADE_CRITICAL`, 91.2% risk, 65% hedge)** | `0xb11c83b3b5893ab11209c8f2fb0efd62c3f25bc3d7e2585737cd360e288b7f37` (EIP-712 `ecrecover`) | `0xdb6d3164304d8e7c24e92803bd36e0e0c3b70e3e0b443c1e4113adc97f21c428` (block `9131931`) | `0x60a450775431b9f27b2065b138cc6cfd737642ad31b16b3f92efd1e9ba7783c2` (block `68665643`, receipt `#1`) | **3 seconds** |
-
-- **Demo Video (1080p YouTube):** https://youtu.be/pggBrUXMLTo
+| **Base Sepolia** | `84532` | `OmniMarketFeed` (Primary Origin) | [`0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80`](https://sepolia.basescan.org/address/0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80) | [`0x2a2f09da...38b7df9`](https://sepolia.basescan.org/tx/0x2a2f09da274a30772c8e182a6146cdba8fc2226fc9e591c295cffacde38b7df9) |
+| **Unichain Sepolia** | `1301` | `OmniMarketFeed` (Secondary Origin) | [`0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80`](https://sepolia.uniscan.xyz/address/0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80) | [`0x7c8d8e65...23b18345`](https://sepolia.uniscan.xyz/tx/0x7c8d8e65d6d5526bd6ba6a5f222fb31ebd3d06c77ec3105a7be5b0a123b18345) |
+| **Reactive Lasna** | `5318007` | `OmniGuardReactive` (`AbstractReactive`) | [`0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6`](https://lasna.reactscan.net/address/0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6) | [`0x7eeeaeef...24c471d`](https://lasna.reactscan.net/tx/0x7eeeaeefaa31ce90ea9988419babd8456d2ff488d00be36303ba1f20024c471d) |
+| **Base Sepolia** | `84532` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.basescan.org/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | [`0x1d8e2c25...d4439e`](https://sepolia.basescan.org/tx/0x1d8e2c2514fe57b6fa7e6058cef87338c1f2736b3638bcb8d329e31082d4439e) |
+| **Unichain Sepolia** | `1301` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.uniscan.xyz/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | [`0xec51c6a6...3250f84`](https://sepolia.uniscan.xyz/tx/0xec51c6a6f610b00a323132dd5d6ca2804059ec67a148df345229f48853250f84) |
 
 ---
 
-## Live Dashboard Preview
+## V2 Security Hardening & Web3-Audit Verification
 
-| Command Console & Live 3-Chain RPC Telemetry | Post-Cascade Execution Proof & Neural Escalation |
-|---|---|
-| ![OmniGuard AI Overview](docs/screenshots/dashboard-overview.png) | ![OmniGuard AI Cascade Proof](docs/screenshots/dashboard-cascade-triggered.png) |
+Following an internal adversarial red-team review of V1, the Solidity contracts in `contracts/src/` and backend signer in `agent/` were hardened to V2 and audited across our full automated security toolchain:
+
+| Security Check / Tool | Result | What It Proves |
+|---|---|---|
+| **Foundry Unit, Regression & Fuzz (`forge test`)** | **28 / 28 PASS** | Closes every P0/High/Med red-team finding + 256-run portfolio value conservation fuzz |
+| **Foundry Stateful Invariants (`OmniGuardInvariants.t.sol`)** | **6 / 6 PASS** | **256 runs &times; 128,000 multi-actor calls (0 reverts, 0 violations)** across owner, attacker, pause, breaker & 200ms block rolls |
+| **Aderyn (`v0.6.8`)** | **0 High** (`5` Low) | Strict CEI callback dispatch & owner-gated `coverDebt()` |
+| **Slither (`v0.11.6`)** | **0 High · 0 Medium** (`7` Low, `3` Info) | Zero `reentrancy-eth`, zero `reentrancy-no-eth`, zero `divide-before-multiply`, zero `incorrect-equality` |
+| **Gitleaks** | **0 Leaks** | Clean git history; `.env.testnet` ignored; fail-closed EIP-712 signer |
+| **Dashboard Vitest + Agent Tests** | **14 / 14 + 5 / 5 PASS** | Breaker Lab guard parity, MLP monotonicity, V2 ABI rule compiler, live receipt decoder |
+
+### Key V2 Contract Fixes (`contracts/src/`)
+1. **Access Control & Allowlisting (`OmniGuardReactive.sol`)**: Gated `createRule()` with `onlyRuleCreator` (owner or allowlisted operators), added `allowedDestinationVaults[chainId][vault]`, capped active rules at **8 per market / 8 per vault / 32 total**, and added swap-and-pop pruning in `setRuleActive(false)` so `react()` never hits Lasna's ~900,000 gas ceiling.
+2. **Emergency Pause & Real Circuit Breaker Lockout (`OmniGuardReactive.sol`, `OmniGuardVault.sol`)**: Added owner `pause()` / `unpause()` (`react()` returns silently when paused with zero wasted `ReactiveContractReverted` gas; vault callbacks revert `VaultPaused()`). Once `CIRCUIT_BREAKER_PAUSE` trips `circuitBreakerActive`, all subsequent `executeProtection()` and `executeCrossChainRebalance()` calls revert `CircuitBreakerActive(marketId)` until `clearCircuitBreaker()` is called. Added rolling 1-hour `maxActionsPerWindow` (default `4`) and `maxSingleActionBps` caps.
+3. **Rule/Action Binding, Spread Freshness & Gas Floor**: Enforced strict `RuleKind <-> ActionType` pairing, rejected `ActionType.CROSS_CHAIN_REBALANCE` inside `executeProtection()` (eliminating silent no-op receipts), enforced `MAX_SPREAD_LEG_AGE_SECONDS = 120` on cross-chain price spread checks, raised `MIN_CALLBACK_GAS_LIMIT` to `450_000`, and keyed vault replay protection on `keccak256(originTxHash, logIndex, ruleId)`.
+4. **Neural Advisement Bounds & Fail-Closed Signer (`OmniMarketFeed.sol`, `agent/src/eip712Signer.ts`)**: Bounded `validUntil <= block.timestamp + 180`, enforced `issuedAt` skew `<= 120s`, added two-step `transferOwnership`/`acceptOwnership`, invalidated old snapshots upon signer rotation, and removed the silent Anvil private key fallback in `eip712Signer.ts`.
+5. **Strict Telemetry Honesty (`dashboard/`, `agent/src/server.ts`)**: Local simulations and the **Adversarial Breaker Lab** are explicitly badged **`SIMULATED`** and never stamp locally hashed simulator traces as `live-testnet`.
 
 ---
 
@@ -47,28 +63,28 @@ All contracts are deployed live across **Base Sepolia (84532)**, **Reactive Lasn
 ```mermaid
 flowchart LR
     subgraph Origin["Origin Chains (Base Sepolia 84532 · 200ms / Unichain Sepolia 1301 · 1s)"]
-        MF["OmniMarketFeed.sol<br/>• PriceUpdated (opCode=2)<br/>• HealthFactorAlert (opCode=3)<br/>• NeuralRegimeCommitted (EIP-712 ecrecover)"]
+        MF["OmniMarketFeed.sol<br/>• PriceUpdated (opCode=2)<br/>• HealthFactorAlert (opCode=3)<br/>• NeuralRegimeCommitted (EIP-712, <=180s TTL)"]
     end
 
-    subgraph AI["Live Neural Sentinel In-The-Loop (agent/)"]
-        MLP["OmniRisk-MLP-7x12x4<br/>7 Features → 12 ReLU → 4 Softmax<br/>CALM / ELEVATED / VOLATILE / CASCADE_CRITICAL"]
-        NLP["Natural-Language Rule Compiler<br/>Plain English → createRule() Calldata<br/>Strict Unix Timestamp Guard"]
+    subgraph AI["Neural Risk Engine & Compiler (agent/ + Browser Studio)"]
+        MLP["OmniRisk-MLP-7x12x4<br/>Calibrated 7 -> 12 -> 4 ReLU/Softmax<br/>CALM / ELEVATED / VOLATILE / CASCADE_CRITICAL"]
+        NLP["Natural-Language Rule Compiler<br/>Plain English -> V2 createRule() ABI Calldata<br/>Strict Unix Timestamp Conversion"]
     end
 
     subgraph Omni["Reactive Lasna Testnet (5318007 · ~1s CometBFT Finality)"]
         SYS["Reactive Omni SYSTEM<br/>0x8888...8888"]
-        RSC["OmniGuardReactive.sol<br/>(AbstractReactive / reactive-lib-omni)<br/>• Multi-topic subscribe()<br/>• Adaptive Neural Threshold Tightening<br/>• Timestamp-Only Cooldowns & Deadlines<br/>• SYSTEM.requestCallbackV_1_0()"]
+        RSC["OmniGuardReactive.sol (V2)<br/>• onlyRuleCreator + Vault Allowlist + 8/32 Caps<br/>• Strict CEI Batched Callback Dispatch<br/>• <=120s Cross-Chain Leg Freshness<br/>• Silent Emergency Pause"]
     end
 
     subgraph Dest["Destination Chains (Unichain Sepolia 1301 · 1s / Base Sepolia 84532 · 200ms)"]
         PROXY["Omni CallbackProxy<br/>Unichain: 0x775c...66C1<br/>Base: 0x476F...3585<br/>160-bit Sender Injection"]
-        VAULT["OmniGuardVault.sol<br/>(AbstractCallback / reactive-lib-omni)<br/>• onlyServiceProvider + onlyCallbackSender<br/>• Hedge / Deleverage / Circuit Breaker / Rebalance<br/>• On-Chain End-to-End Latency Receipts"]
+        VAULT["OmniGuardVault.sol (V2)<br/>• onlyServiceProvider + onlyCallbackSender<br/>• Real CircuitBreakerActive Lockout + 4/hr Cap<br/>• (txHash, logIndex, ruleId) Replay Guard<br/>• On-Chain ExecutionReceipt Ledger"]
     end
 
-    MF -- "Subscribed Event Logs" --> SYS
-    MF -- "Live Market Telemetry" --> MLP
-    MLP -- "EIP-712 Signed Advisement" --> MF
-    NLP -- "GuardRule Registration" --> RSC
+    MF -- "Subscribed Logs" --> SYS
+    MF -- "Market Telemetry" --> MLP
+    MLP -- "EIP-712 Advisement (Proposes)" --> MF
+    NLP -- "V2 createRule() Calldata" --> RSC
     SYS -- "onlySystem react(LogRecord)" --> RSC
     RSC -- "requestCallbackV_1_0(address(0), ...)" --> SYS
     SYS -- "Reactive Signer Relay" --> PROXY
@@ -77,34 +93,41 @@ flowchart LR
 
 ---
 
-## Why Reactive Omni Matters Here
-
-On Base Sepolia's Denim upgrade (**200ms blocks**) and Unichain Sepolia (**1s blocks**), liquidation cascades unfold in seconds:
-
-| Execution Layer | Origin Confirm | Reactive Finality | Callback Delivery | Total End-to-End | Outcome |
-|---|---:|---:|---:|---:|---|
-| **Legacy Reactive (~7s blocks)** | ~0.21s | ~7.35s | ~1.02s | **~8.58s – 9.50s** | Too slow — vault liquidated before callback lands |
-| **Reactive Omni (CometBFT ~1s)** | ~0.21s | **~1.04s** | ~1.02s | **~2.27s (Base &rarr; Unichain)** / **~1.57s (Base &rarr; Base)** | **~4.2x faster** — hedge & deleveraging settle before cascade completes |
-
-### Strict Base Sepolia 200ms Timestamp Discipline
-Every cooldown, rule expiration (`expiresAt`), EIP-712 advisement deadline (`validUntil`), and latency receipt across `OmniMarketFeed`, `OmniGuardReactive`, and `OmniGuardVault` uses **Unix timestamps (`uint64` seconds via `block.timestamp`) — never `block.number` counts**.
-- Verified by dedicated Foundry invariant test `test_TimestampCooldownInvariant_Under200msBaseBlocks()` (advances `+50` block numbers with only `+10s` wall time and proves premature execution is blocked until the full `30s` timestamp cooldown elapses).
-- Enforced inside the Natural-Language Rule Compiler: if a user writes *"15 blocks cooldown"*, the compiler automatically converts it to Unix seconds and surfaces an explicit Base Sepolia 200ms safety advisory.
-
----
-
 ## Verified Reactive Omni Testnet Parameters
 
-All addresses and fee parameters were verified live via JSON-RPC against `dev.reactive.network` and `Reactive-Network/reactive-lib-omni` (`3ade0dcf`):
-
-| Network | Chain ID | RPC URL | Verified Omni System / Callback Proxy | Live Proxy Fee Params (`coeff / extraGas / maxChargeGas`) |
+| Network | Chain ID | Public RPC | Official Omni System / CallbackProxy | Proxy Fee Params (`coeff / extraGas / maxChargeGas`) |
 |---|---:|---|---|---|
 | **Reactive Lasna** | `5318007` | `https://lasna-rpc.rnk.dev/` | `0x8888888888888888888888888888888888888888` | `1000` / `100,000` / `50,000` |
 | **Base Sepolia** | `84532` | `https://sepolia.base.org` | `0x476F44b11F5C942c58f4c8E3d0300E5710743585` | `1100` / `80,000` / `50,000` |
 | **Unichain Sepolia** | `1301` | `https://sepolia.unichain.org` | `0x775c9B990ADe401060B78D0e98684eEf8d2466C1` | `1100` / `80,000` / `50,000` |
 | **Base Sepolia lREACT Faucet** | `84532` | `https://sepolia.base.org` | `0x2afaFD298b23b62760711756088F75B7409f5967` | `1 SepETH -> 100 lREACT` (max `5 ETH`) |
 
-> **Callback Gas Sizing:** Because Base Sepolia and Unichain Sepolia Omni CallbackProxies reserve `80,000 (_extraGas) + 50,000 (_maxChargeGas) = 130,000` gas before forwarding to the recipient, `OmniGuardReactive` enforces `callbackGasLimit >= 250,000` (default `500,000`) to guarantee zero `InsufficientGas` failures.
+---
+
+## Quick Start & Reproducible Verification
+
+### 1. Live Zero-Setup Judge Workbench
+Open **[https://alphonshhhomenicmtu.github.io/omniguard-ai/](https://alphonshhhomenicmtu.github.io/omniguard-ai/)** to inspect live `getReceipt(0)` & `getReceipt(1)` reads directly from Unichain Sepolia RPC, run all 6 attacks in the **Adversarial Breaker Lab**, test the **Neural & Rule Studio**, or visit **`/diag/`** for automated 3-chain self-tests.
+
+### 2. Reproduce Smart Contract Unit, Fuzz & Stateful Invariant Suite
+```bash
+cd contracts
+forge test -vv
+```
+
+### 3. Run Static Analysis & Secret Scan
+```bash
+cd contracts
+aderyn .
+slither . --exclude-dependencies
+cd .. && gitleaks detect --source . --no-banner
+```
+
+### 4. Run Agent & Dashboard Vitest Suites
+```bash
+cd agent && npm test
+cd ../dashboard && npm test && npm run build
+```
 
 ---
 
@@ -112,102 +135,29 @@ All addresses and fee parameters were verified live via JSON-RPC against `dev.re
 
 ```text
 reactive-omni/
-├── SPEC.md                              # Verified DoraHacks & Reactive Omni technical spec
-├── contracts/                           # Foundry project (Solidity 0.8.29, reactive-lib-omni)
+├── contracts/
 │   ├── src/
-│   │   ├── interfaces/IOmniGuardTypes.sol   # Shared enums, GuardRule structs, canonical topic0 hashes
-│   │   ├── origin/OmniMarketFeed.sol        # Base/Unichain price & HF feed + EIP-712 neural verifier
-│   │   ├── reactive/OmniGuardReactive.sol   # Lasna AbstractReactive multi-rule + adaptive AI engine
-│   │   └── destination/OmniGuardVault.sol   # Unichain/Base AbstractCallback protection & rebalance vault
-│   ├── test/
-│   │   ├── mocks/MockOmniSystem.sol         # Faithful Omni SYSTEM (0x8888...8888) test double
-│   │   ├── mocks/MockOmniCallbackProxy.sol  # Faithful 160-bit sender-injecting CallbackProxy double
-│   │   └── OmniGuardEndToEnd.t.sol          # 18 unit, security, timestamp-invariant, E2E & fuzz tests
-│   └── lib/reactive-lib-omni/               # Official Reactive-Network/reactive-lib-omni
-├── agent/                               # Live Neural Risk Sentinel & NL Rule Compiler backend
-│   └── src/
-│       ├── neuralModel.ts                   # OmniRisk-MLP-7x12x4 neural network (ReLU + Softmax)
-│       ├── ruleCompiler.ts                  # Natural-language -> createRule() ABI calldata compiler
-│       ├── eip712Signer.ts                  # EIP-712 NeuralAdvisement signer matching OmniMarketFeed
-│       ├── server.ts                        # Live RPC telemetry + simulation + API server (:18788)
-│       └── neuralModel.test.ts              # Automated neural, NLP compiler & EIP-712 unit tests
-├── dashboard/                           # React 18 + Vite + TypeScript Mission-Control UI (:5178)
-├── scripts/                             # One-command testnet deployment & full-loop proof scripts
-│   ├── deploy-origin.ts                     # Step 1: Deploy Base & Unichain OmniMarketFeed (+ optional faucet)
-│   ├── deploy-reactive.ts                   # Step 2: Deploy OmniGuardReactive on Lasna + verify rnk_getFilters
-│   ├── deploy-destination.ts                # Step 3: Deploy Vaults, fund proxies, register GuardRules
-│   └── trigger-demo.ts                      # Step 4: Fire full loop & capture DoraHacks proof tx hashes
+│   │   ├── interfaces/IOmniGuardTypes.sol       # V2 enums, structs, caps, canonical topic0 constants
+│   │   ├── origin/OmniMarketFeed.sol            # Price/HF feed + bounded EIP-712 neural verifier
+│   │   ├── reactive/OmniGuardReactive.sol       # V2 allowlisted, capped, pausable, CEI AbstractReactive
+│   │   └── destination/OmniGuardVault.sol       # V2 locked circuit-breaker, rolling-cap AbstractCallback vault
+│   └── test/
+│       ├── OmniGuardEndToEnd.t.sol              # 28 unit, E2E, 200ms timestamp, V2 security & fuzz tests
+│       └── invariants/OmniGuardInvariants.t.sol # 6 stateful invariants (256 runs, 128,000 calls)
+├── dashboard/                                   # Public Static Live RPC Judge Workbench + Breaker Lab (GitHub Pages)
+│   └── src/lib/
+│       ├── deployments.ts                       # Verified addresses & on-chain loop proofs
+│       ├── liveRpc.ts                           # Browser-direct viem RPC reader & /diag runner
+│       ├── breakerEngine.ts                     # Deterministic V2 Solidity guard mirror (6 attack vectors)
+│       ├── neuralAndCompiler.ts                 # Browser OmniRisk-MLP-7x12x4 + V2 ABI calldata compiler
+│       └── workbench.test.ts                    # 14 Vitest unit tests
+├── agent/                                       # Fail-closed EIP-712 signer, neural model & local telemetry server
+├── scripts/                                     # 3-chain deployment & full-loop proof scripts
+├── deployments/                                 # Live testnet.json & last-proof.json artifacts
 └── docs/
-    ├── DEMO_SCRIPT.md                       # Tight 2m30s DoraHacks demo video script
-    └── screenshots/                         # Visually verified dashboard renders
+    ├── omniguard-deck.pdf                       # 10-slide technical pitch deck
+    └── DEMO_SCRIPT.md                           # 2m 30s walkthrough script
 ```
-
----
-
-## Quick Start (Local Build, Tests & Interactive Console)
-
-### 1. Run Foundry Smart Contract Test Suite (18 Tests — 100% Pass)
-```bash
-cd contracts
-forge test -vv --gas-report
-```
-
-Verified test coverage includes:
-- Canonical `topic0` selector verification against Solidity event signatures
-- Full cross-chain loops: Base Sepolia flash crash &rarr; Lasna `react()` &rarr; Unichain `OmniGuardVault` stop-loss hedge, health-factor debt deleveraging, cross-chain spread rebalancing, and EIP-712 neural cascade escalation
-- **Adaptive AI Threshold Tightening:** proves a `-3.0%` drop is ignored in `CALM` regime (`4.0%` threshold), then immediately fires once the live Neural Sentinel commits `CASCADE_CRITICAL` (`4.0% -> 2.6%` tightened threshold + boosted `50%` hedge)
-- **Base Sepolia 200ms Timestamp Cooldown Invariant:** proves `+50` block numbers with `+10s` elapsed stays locked under a `30s` cooldown and unlocks strictly at `+30s`
-- Security & auth guards: `onlySystem`, dual `onlyServiceProvider` + `onlyCallbackSender`, EIP-712 signer/nonce/expiry verification, duplicate callback replay rejection, silent non-matching log fallthrough, CRON toggle, `AbstractPayer` debt settlement, and 256-run fuzz value conservation.
-
-### 2. Run Live Neural Sentinel Backend & Tests
-```bash
-cd agent
-npm install
-npm test
-npm run dev
-```
-
-### 3. Launch Interactive React Dashboard
-```bash
-cd dashboard
-npm install
-npm run dev
-```
-Open `http://127.0.0.1:5178` — the dashboard automatically connects to live Base Sepolia, Reactive Lasna (`rnk_getCommittedSequenceFrontier`), and Unichain Sepolia RPC heads while letting you trigger full cross-chain loops and compile plain-English guard rules.
-
----
-
-## One-Command Testnet Deployment & Live Proof Generation
-
-1. Copy `.env.example` to `.env` and populate `DEPLOYER_PRIVATE_KEY` (a funded testnet wallet holding Base Sepolia ETH, Unichain Sepolia ETH, and Lasna `lREACT` — or pass `--claim-faucet` in Step 1 to swap `0.05` Base Sepolia ETH for `5 lREACT` automatically):
-   ```bash
-   cp .env.example .env
-   ```
-2. Compile contracts so `contracts/out/` artifacts are fresh:
-   ```bash
-   cd contracts && forge build && cd ..
-   ```
-3. Install script dependencies and deploy the entire 3-chain topology in Reactive Omni's mandatory order (`Origin -> Reactive Lasna -> Destination Vaults & Rules`):
-   ```bash
-   cd scripts
-   npm install
-   npx tsx deploy-origin.ts --claim-faucet   # Step 1: Base & Unichain OmniMarketFeed
-   npm run deploy:reactive                   # Step 2: Lasna OmniGuardReactive + rnk_getFilters check
-   npm run deploy:destination                # Step 3: Base & Unichain OmniGuardVault + proxy depositTo() + rules
-   ```
-4. Execute a live full-loop proof run and print DoraHacks submission hashes + measured latency:
-   ```bash
-   npm run demo:trigger
-   ```
-   Output is persisted to `deployments/testnet.json` (all contract addresses) and `deployments/last-proof.json` (`originTxHash`, `neuralAdvisementTxHash`, `reactiveTxHash`, `callbackTxHash`, and measured `onChainEndToEndLatencySec` / `wallClockEndToEndMs`).
-
----
-
-## Demo Video Script (2m 30s)
-
-See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for the full timestamped 2-minute-30-second walkthrough script covering problem framing, live 3-chain telemetry, natural-language rule compilation, live neural adaptive tightening, and full-loop `Origin -> Reactive Lasna -> Unichain Callback` tx hash verification.
-
----
 
 ## License
 

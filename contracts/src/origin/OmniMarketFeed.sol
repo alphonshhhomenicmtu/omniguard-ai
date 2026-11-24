@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.29;
+pragma solidity 0.8.29;
 
 import { OmniGuardTypes } from "../interfaces/IOmniGuardTypes.sol";
 
 /**
  * @title OmniMarketFeed
- * @notice Origin-chain market telemetry, vault health feed, and EIP-712 Neural Advisement verifier.
+ * @notice Origin-chain market telemetry, vault health feed, and EIP-712 Neural Advisement verifier (V2 hardened).
  * @dev Deployed on Base Sepolia (84532, 200ms blocks) and/or Unichain Sepolia (1301, 1s blocks).
  *      Emits structured events consumed in ~1s by OmniGuardReactive on Reactive Lasna (5318007).
- *      All validity checks use block.timestamp exclusively (never block.number).
+ *      Enforces bounded EIP-712 TTLs (<= 180s), issuedAt skew guards (<= 120s), two-step ownership,
+ *      and signer-rotation snapshot invalidation using Unix timestamps exclusively (never block.number).
  */
 contract OmniMarketFeed {
-    using OmniGuardTypes for *;
-
     /// @notice Market state snapshot tracked on the origin chain.
     struct MarketState {
         uint256 lastPriceE8;
@@ -44,11 +43,23 @@ contract OmniMarketFeed {
     uint256 private constant SECP256K1_N_DIV_2 =
         0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
+    uint256 private constant DEFAULT_BASE_PRICE_E8 = 32e10; // $3,200.00 scaled by 1e8
+    uint256 private constant DEFAULT_INITIAL_VOL_BPS = 120;
+    uint256 private constant SIGNATURE_LENGTH = 65;
+    uint8 private constant SIG_V_LOWER = 27;
+    uint8 private constant SIG_V_UPPER = 28;
+
     /// @notice Contract administrator.
     address public owner;
 
+    /// @notice Pending owner for two-step ownership transfer.
+    address public pendingOwner;
+
     /// @notice Authorized EIP-712 signer for the live Neural Risk Sentinel.
     address public neuralSigner;
+
+    /// @notice Monotonic epoch incremented on every neural signer rotation.
+    uint256 public neuralSignerEpoch;
 
     /// @notice Whether open demo triggers are enabled for testnet demonstrations.
     bool public demoModeEnabled;
@@ -96,17 +107,23 @@ contract OmniMarketFeed {
         uint64 validUntil
     );
 
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event ReporterUpdated(address indexed reporter, bool allowed);
-    event NeuralSignerUpdated(address indexed oldSigner, address indexed newSigner);
+    event NeuralSignerUpdated(address indexed oldSigner, address indexed newSigner, uint256 epoch);
+    event NeuralStateCleared(bytes32 indexed marketId);
     event DemoModeUpdated(bool enabled);
 
     error NotOwner();
+    error NotPendingOwner();
     error NotAuthorizedReporter();
     error InvalidAddress();
     error InvalidPrice();
     error InvalidBps(uint256 value);
     error InvalidRegime(uint8 regime);
     error ExpiredAdvisement(uint64 validUntil, uint64 currentTimestamp);
+    error AdvisementTtlTooLong(uint64 validUntil, uint64 maxValidUntil);
+    error InvalidIssuedAt(uint64 issuedAt, uint64 currentTimestamp);
     error InvalidNonce(uint256 expected, uint256 provided);
     error InvalidSignatureLength(uint256 length);
     error InvalidSignatureValue();
@@ -127,7 +144,7 @@ contract OmniMarketFeed {
     /**
      * @param owner_ Administrator address.
      * @param neuralSigner_ Authorized EIP-712 signer for the live Neural Risk Sentinel.
-     * @param initialWethPriceE8_ Initial WETH/USDC price scaled to 1e8 (e.g., 3200_00000000 = $3,200.00).
+     * @param initialWethPriceE8_ Initial WETH/USDC price scaled to 1e8 (e.g., 3200e8 = $3,200.00).
      */
     constructor(address owner_, address neuralSigner_, uint256 initialWethPriceE8_) {
         if (owner_ == address(0) || neuralSigner_ == address(0)) revert InvalidAddress();
@@ -135,14 +152,32 @@ contract OmniMarketFeed {
 
         owner = owner_;
         neuralSigner = neuralSigner_;
+        neuralSignerEpoch = 1;
         authorizedReporters[owner_] = true;
         authorizedReporters[neuralSigner_] = true;
 
         markets[OmniGuardTypes.MARKET_WETH_USDC] = MarketState({
             lastPriceE8: initialWethPriceE8_,
-            lastVolatilityBps: 120,
+            lastVolatilityBps: DEFAULT_INITIAL_VOL_BPS,
             lastUpdatedAt: uint64(block.timestamp)
         });
+    }
+
+    /// @notice Initiates a two-step ownership transfer.
+    function transferOwnership(address newOwner_) external onlyOwner {
+        if (newOwner_ == address(0)) revert InvalidAddress();
+        pendingOwner = newOwner_;
+        emit OwnershipTransferStarted(owner, newOwner_);
+    }
+
+    /// @notice Completes a two-step ownership transfer.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address prev = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        authorizedReporters[owner] = true;
+        emit OwnershipTransferred(prev, owner);
     }
 
     /// @notice Computes the EIP-712 domain separator dynamically for the active chainId.
@@ -181,12 +216,32 @@ contract OmniMarketFeed {
         emit ReporterUpdated(reporter_, allowed_);
     }
 
+    /// @notice Rotates the neural EIP-712 signer, revokes the old signer's reporter role (if distinct from owner),
+    ///         and increments neuralSignerEpoch so previously cached snapshots from the old key are invalidated.
     function setNeuralSigner(address newSigner_) external onlyOwner {
         if (newSigner_ == address(0)) revert InvalidAddress();
         address prev = neuralSigner;
+        if (prev != owner) {
+            authorizedReporters[prev] = false;
+        }
         neuralSigner = newSigner_;
         authorizedReporters[newSigner_] = true;
-        emit NeuralSignerUpdated(prev, newSigner_);
+        uint256 nextEpoch = ++neuralSignerEpoch;
+        emit NeuralSignerUpdated(prev, newSigner_, nextEpoch);
+    }
+
+    /// @notice Explicitly clears cached neural state for a market.
+    function clearNeuralState(bytes32 marketId_) external onlyOwner {
+        delete latestNeuralState[marketId_];
+        emit NeuralStateCleared(marketId_);
+    }
+
+    /// @notice Returns the active neural snapshot only if signed by the current neuralSigner and unexpired.
+    function getActiveNeuralState(bytes32 marketId_) external view returns (OmniGuardTypes.NeuralSnapshot memory snap) {
+        snap = latestNeuralState[marketId_];
+        if (snap.signer != neuralSigner || snap.validUntil < uint64(block.timestamp)) {
+            delete snap;
+        }
     }
 
     function setDemoMode(bool enabled_) external onlyOwner {
@@ -223,7 +278,7 @@ contract OmniMarketFeed {
             revert InvalidBps(dropBps_);
         }
         MarketState memory state = markets[marketId_];
-        uint256 basePrice = state.lastPriceE8 == 0 ? 3200_00000000 : state.lastPriceE8;
+        uint256 basePrice = state.lastPriceE8 == 0 ? DEFAULT_BASE_PRICE_E8 : state.lastPriceE8;
         newPriceE8 = (basePrice * (OmniGuardTypes.BPS_DENOMINATOR - dropBps_)) / OmniGuardTypes.BPS_DENOMINATOR;
         if (newPriceE8 == 0) newPriceE8 = 1;
         _recordAndEmitPrice(marketId_, newPriceE8, spikeVolatilityBps_);
@@ -258,7 +313,7 @@ contract OmniMarketFeed {
     /**
      * @notice Verifies an EIP-712 signed Neural Risk Advisement from the running AI Sentinel
      *         and emits NeuralRegimeCommitted so Reactive Omni adapts thresholds and/or dispatches protection.
-     * @dev Strictly validates Unix timestamp validity (validUntil >= block.timestamp), never block.number.
+     * @dev Strictly enforces Unix timestamp expiry, max TTL <= 180s, and issuedAt skew <= 120s.
      */
     function submitSignedNeuralRegime(NeuralAdvisement calldata advisement_, bytes calldata signature_) external {
         if (advisement_.regime > uint8(OmniGuardTypes.RiskRegime.CASCADE_CRITICAL)) {
@@ -270,9 +325,23 @@ contract OmniMarketFeed {
         if (advisement_.recommendedHedgeBps > OmniGuardTypes.BPS_DENOMINATOR) {
             revert InvalidBps(advisement_.recommendedHedgeBps);
         }
+
         uint64 nowTs = uint64(block.timestamp);
         if (advisement_.validUntil < nowTs) {
             revert ExpiredAdvisement(advisement_.validUntil, nowTs);
+        }
+        uint64 maxValidUntil = nowTs + OmniGuardTypes.MAX_ADVISEMENT_TTL_SECONDS;
+        if (advisement_.validUntil > maxValidUntil) {
+            revert AdvisementTtlTooLong(advisement_.validUntil, maxValidUntil);
+        }
+        if (
+            advisement_.issuedAt > nowTs + OmniGuardTypes.MAX_ISSUED_AT_SKEW_SECONDS
+                || advisement_.issuedAt + OmniGuardTypes.MAX_ISSUED_AT_SKEW_SECONDS < nowTs
+        ) {
+            revert InvalidIssuedAt(advisement_.issuedAt, nowTs);
+        }
+        if (advisement_.validUntil < advisement_.issuedAt) {
+            revert ExpiredAdvisement(advisement_.validUntil, advisement_.issuedAt);
         }
 
         uint256 expectedNonce = neuralNonces[advisement_.marketId];
@@ -327,18 +396,14 @@ contract OmniMarketFeed {
     }
 
     function _recoverSigner(bytes32 digest_, bytes calldata signature_) internal pure returns (address signer) {
-        if (signature_.length != 65) revert InvalidSignatureLength(signature_.length);
+        if (signature_.length != SIGNATURE_LENGTH) revert InvalidSignatureLength(signature_.length);
 
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-        assembly {
-            r := calldataload(signature_.offset)
-            s := calldataload(add(signature_.offset, 32))
-            v := byte(0, calldataload(add(signature_.offset, 64)))
-        }
-        if (v < 27) v += 27;
-        if (v != 27 && v != 28) revert InvalidSignatureValue();
+        bytes32 r = bytes32(signature_[0:32]);
+        bytes32 s = bytes32(signature_[32:64]);
+        uint8 v = uint8(signature_[64]);
+
+        if (v < SIG_V_LOWER) v += SIG_V_LOWER;
+        if (v != SIG_V_LOWER && v != SIG_V_UPPER) revert InvalidSignatureValue();
         if (uint256(s) > SECP256K1_N_DIV_2) revert InvalidSignatureValue();
 
         signer = ecrecover(digest_, v, r, s);

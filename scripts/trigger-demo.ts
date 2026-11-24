@@ -86,7 +86,7 @@ async function main() {
     riskScoreBps: 9120,
     recommendedHedgeBps: 6500,
     issuedAt: nowSec,
-    validUntil: nowSec + 300n,
+    validUntil: nowSec + 180n,
     nonce: currentNonce,
   };
   const signature = await neuralAccount.signTypedData({

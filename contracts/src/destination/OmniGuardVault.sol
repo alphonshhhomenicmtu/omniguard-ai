@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.29;
+pragma solidity 0.8.29;
 
 import { IPayable } from "@reactive/src/interfaces/IPayable.sol";
 import { AbstractCallback } from "@reactive/src/base/AbstractCallback.sol";
@@ -7,12 +7,15 @@ import { OmniGuardTypes } from "../interfaces/IOmniGuardTypes.sol";
 
 /**
  * @title OmniGuardVault
- * @notice Destination-chain autonomous DeFi protection and cross-chain rebalancing vault.
+ * @notice Destination-chain autonomous DeFi protection and cross-chain rebalancing vault (V2 hardened).
  * @dev Deployed on Unichain Sepolia (1301, proxy 0x775c9B990ADe401060B78D0e98684eEf8d2466C1)
  *      and/or Base Sepolia (84532, proxy 0x476F44b11F5C942c58f4c8E3d0300E5710743585).
- *      Inherits `AbstractCallback` from `reactive-lib-omni` and strictly guards every callback entrypoint
- *      with BOTH `onlyServiceProvider` AND `onlyCallbackSender(reactiveSender_)`.
- *      Records on-chain end-to-end latency in seconds using Unix timestamps exclusively (never block numbers).
+ *      Inherits `AbstractCallback` from `reactive-lib-omni` and strictly enforces:
+ *      - Dual callback auth (`onlyServiceProvider` + `onlyCallbackSender`)
+ *      - Emergency vault `pause()` / `unpause()` + two-step ownership
+ *      - Real circuit breaker lockout (`circuitBreakerActive` blocks all subsequent callbacks until owner clears)
+ *      - Rolling 1-hour window action cap + configurable single-action bps cap
+ *      - Exact `(originTxHash, logIndex, ruleId)` replay guard + zero no-op action routing
  */
 contract OmniGuardVault is AbstractCallback {
     /// @notice Protected portfolio accounting state per marketId (USD values scaled to 1e8).
@@ -23,6 +26,8 @@ contract OmniGuardVault is AbstractCallback {
         uint256 rebalancedVolumeUsdE8;
         bool circuitBreakerActive;
         uint64 lastActionTimestamp;
+        uint64 windowStartTimestamp;
+        uint16 windowActionCount;
     }
 
     /// @notice Verifiable on-chain execution receipt proving origin -> Reactive -> callback completion.
@@ -44,17 +49,51 @@ contract OmniGuardVault is AbstractCallback {
         uint256 debtAfterUsdE8;
     }
 
+    uint256 private constant DEFAULT_VOLATILE_USD_E8 = 1e13; // $100,000.00 scaled by 1e8
+    uint256 private constant DEFAULT_STABLE_USD_E8 = 25e11; // $25,000.00 scaled by 1e8
+    uint256 private constant DEFAULT_DEBT_USD_E8 = 6e12; // $60,000.00 scaled by 1e8
+
+    uint256 private constant VOLATILE_LTV_PCT = 80;
+    uint256 private constant STABLE_LTV_PCT = 95;
+    uint256 private constant LTV_TO_BPS_MULTIPLIER = 100;
+
+    /// @notice Rolling circuit breaker window duration (1 hour in Unix seconds).
+    uint64 public constant BREAKER_WINDOW_SECONDS = 3600;
+
+    /// @notice Upper sanity limit for configurable rolling window actions.
+    uint16 public constant MAX_CONFIGURABLE_WINDOW_ACTIONS = 20;
+
+    /// @notice Lower sanity floor for configurable single-action bps cap.
+    uint16 public constant MIN_SINGLE_ACTION_BPS = 100;
+
     /// @notice Vault administrator.
     address public owner;
+
+    /// @notice Pending owner for two-step ownership transfer.
+    address public pendingOwner;
+
+    /// @notice Emergency pause flag blocking all callback mutations.
+    bool public paused;
+
+    /// @notice Maximum allowed callbacks per market inside a rolling 1-hour window.
+    uint16 public maxActionsPerWindow = 4;
+
+    /// @notice Maximum single-callback hedge/rebalance/deleverage basis points allowed.
+    uint16 public maxSingleActionBps = OmniGuardTypes.BPS_DENOMINATOR;
 
     /// @notice Portfolio state per marketId.
     mapping(bytes32 => VaultPosition) public positions;
 
-    /// @notice Replay protection keyed by (originTxHash, ruleId).
-    mapping(uint256 => mapping(uint256 => bool)) public executedOriginTx;
+    /// @notice Replay protection keyed by keccak256(originTxHash, logIndex, ruleId).
+    mapping(bytes32 => bool) public executedCallbacks;
 
     /// @notice Chronological log of all callback execution receipts.
     ExecutionReceipt[] public receipts;
+
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event PauseStatusChanged(bool paused);
+    event CircuitBreakerCapsUpdated(uint16 maxActionsPerWindow, uint16 maxSingleActionBps);
 
     event PositionConfigured(
         bytes32 indexed marketId,
@@ -93,13 +132,24 @@ contract OmniGuardVault is AbstractCallback {
     event CircuitBreakerCleared(bytes32 indexed marketId, uint64 timestamp);
 
     error NotOwner();
+    error NotPendingOwner();
+    error VaultPaused();
+    error CircuitBreakerActive(bytes32 marketId);
+    error WindowActionCapExceeded(bytes32 marketId, uint16 maxActionsPerWindow);
+    error ActionBpsExceedsCap(uint16 requestedBps, uint16 maxAllowedBps);
     error InvalidAddress();
     error InvalidBps(uint16 value);
+    error InvalidWindowCap(uint16 value);
     error InvalidActionType(uint8 actionType);
-    error DuplicateCallbackExecution(uint256 originTxHash, uint256 ruleId);
+    error DuplicateCallbackExecution(uint256 originTxHash, uint256 logIndex, uint256 ruleId);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert VaultPaused();
         _;
     }
 
@@ -120,17 +170,60 @@ contract OmniGuardVault is AbstractCallback {
 
         // Seed default WETH/USDC demo vault position ($100,000 volatile WETH, $25,000 USDC reserve, $60,000 debt).
         positions[OmniGuardTypes.MARKET_WETH_USDC] = VaultPosition({
-            volatileCollateralUsdE8: 100_000_00000000,
-            stableReserveUsdE8: 25_000_00000000,
-            debtUsdE8: 60_000_00000000,
+            volatileCollateralUsdE8: DEFAULT_VOLATILE_USD_E8,
+            stableReserveUsdE8: DEFAULT_STABLE_USD_E8,
+            debtUsdE8: DEFAULT_DEBT_USD_E8,
             rebalancedVolumeUsdE8: 0,
             circuitBreakerActive: false,
-            lastActionTimestamp: uint64(block.timestamp)
+            lastActionTimestamp: uint64(block.timestamp),
+            windowStartTimestamp: 0,
+            windowActionCount: 0
         });
     }
 
+    /// @notice Initiates a two-step ownership transfer.
+    function transferOwnership(address newOwner_) external onlyOwner {
+        if (newOwner_ == address(0)) revert InvalidAddress();
+        pendingOwner = newOwner_;
+        emit OwnershipTransferStarted(owner, newOwner_);
+    }
+
+    /// @notice Completes a two-step ownership transfer.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address prev = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(prev, owner);
+    }
+
+    /// @notice Emergency pause blocking all vault callbacks.
+    function pause() external onlyOwner {
+        paused = true;
+        emit PauseStatusChanged(true);
+    }
+
+    /// @notice Resumes vault callback processing.
+    function unpause() external onlyOwner {
+        paused = false;
+        emit PauseStatusChanged(false);
+    }
+
+    /// @notice Updates the rolling 1-hour circuit breaker action cap and single-action bps ceiling.
+    function setCircuitBreakerCaps(uint16 maxActionsPerWindow_, uint16 maxSingleActionBps_) external onlyOwner {
+        if (maxActionsPerWindow_ == 0 || maxActionsPerWindow_ > MAX_CONFIGURABLE_WINDOW_ACTIONS) {
+            revert InvalidWindowCap(maxActionsPerWindow_);
+        }
+        if (maxSingleActionBps_ < MIN_SINGLE_ACTION_BPS || maxSingleActionBps_ > OmniGuardTypes.BPS_DENOMINATOR) {
+            revert InvalidBps(maxSingleActionBps_);
+        }
+        maxActionsPerWindow = maxActionsPerWindow_;
+        maxSingleActionBps = maxSingleActionBps_;
+        emit CircuitBreakerCapsUpdated(maxActionsPerWindow_, maxSingleActionBps_);
+    }
+
     /// @notice Settles any outstanding debt to the destination CallbackProxy from this vault's ETH balance.
-    function coverDebt() external {
+    function coverDebt() external onlyOwner {
         _coverDebt();
     }
 
@@ -147,7 +240,9 @@ contract OmniGuardVault is AbstractCallback {
             debtUsdE8: debtUsdE8_,
             rebalancedVolumeUsdE8: 0,
             circuitBreakerActive: false,
-            lastActionTimestamp: uint64(block.timestamp)
+            lastActionTimestamp: uint64(block.timestamp),
+            windowStartTimestamp: 0,
+            windowActionCount: 0
         });
 
         emit PositionConfigured(
@@ -155,9 +250,12 @@ contract OmniGuardVault is AbstractCallback {
         );
     }
 
-    /// @notice Clears an active circuit breaker after market stabilization.
+    /// @notice Clears an active circuit breaker and resets its rolling window counter after market stabilization.
     function clearCircuitBreaker(bytes32 marketId_) external onlyOwner {
-        positions[marketId_].circuitBreakerActive = false;
+        VaultPosition storage pos = positions[marketId_];
+        pos.circuitBreakerActive = false;
+        pos.windowStartTimestamp = 0;
+        pos.windowActionCount = 0;
         emit CircuitBreakerCleared(marketId_, uint64(block.timestamp));
     }
 
@@ -175,20 +273,34 @@ contract OmniGuardVault is AbstractCallback {
         uint16 hedgeBps_,
         uint16 aiRiskScoreBps_,
         uint64 originTimestamp_,
-        uint256 originTxHash_
-    ) external onlyServiceProvider onlyCallbackSender(reactiveSender_) {
-        if (actionTypeRaw_ > uint8(OmniGuardTypes.ActionType.CROSS_CHAIN_REBALANCE)) {
+        uint256 originTxHash_,
+        uint256 logIndex_
+    ) external onlyServiceProvider onlyCallbackSender(reactiveSender_) whenNotPaused {
+        // Reject CROSS_CHAIN_REBALANCE and out-of-range enums so no silent no-op receipt is ever recorded.
+        if (actionTypeRaw_ > uint8(OmniGuardTypes.ActionType.CIRCUIT_BREAKER_PAUSE)) {
             revert InvalidActionType(actionTypeRaw_);
         }
         if (hedgeBps_ == 0 || hedgeBps_ > OmniGuardTypes.BPS_DENOMINATOR) {
             revert InvalidBps(hedgeBps_);
         }
-        if (executedOriginTx[originTxHash_][ruleId_]) {
-            revert DuplicateCallbackExecution(originTxHash_, ruleId_);
+        if (hedgeBps_ > maxSingleActionBps) {
+            revert ActionBpsExceedsCap(hedgeBps_, maxSingleActionBps);
         }
-        executedOriginTx[originTxHash_][ruleId_] = true;
 
         VaultPosition storage pos = positions[marketId_];
+        if (pos.circuitBreakerActive) {
+            revert CircuitBreakerActive(marketId_);
+        }
+
+        bytes32 replayKey = keccak256(abi.encode(originTxHash_, logIndex_, ruleId_));
+        if (executedCallbacks[replayKey]) {
+            revert DuplicateCallbackExecution(originTxHash_, logIndex_, ruleId_);
+        }
+        executedCallbacks[replayKey] = true;
+
+        uint64 nowTs = uint64(block.timestamp);
+        _consumeRollingWindowCap(pos, marketId_, nowTs);
+
         uint256 collateralBefore = pos.volatileCollateralUsdE8;
         OmniGuardTypes.ActionType actionType = OmniGuardTypes.ActionType(actionTypeRaw_);
 
@@ -205,14 +317,14 @@ contract OmniGuardVault is AbstractCallback {
                 remaining <= pos.volatileCollateralUsdE8 ? remaining : pos.volatileCollateralUsdE8;
             pos.volatileCollateralUsdE8 -= fromCollateral;
             pos.debtUsdE8 -= (fromStable + fromCollateral);
-        } else if (actionType == OmniGuardTypes.ActionType.CIRCUIT_BREAKER_PAUSE) {
+        } else {
+            // OmniGuardTypes.ActionType.CIRCUIT_BREAKER_PAUSE
             pos.circuitBreakerActive = true;
             uint256 emergencyShift = (pos.volatileCollateralUsdE8 * hedgeBps_) / OmniGuardTypes.BPS_DENOMINATOR;
             pos.volatileCollateralUsdE8 -= emergencyShift;
             pos.stableReserveUsdE8 += emergencyShift;
         }
 
-        uint64 nowTs = uint64(block.timestamp);
         uint64 latencySec = nowTs >= originTimestamp_ ? nowTs - originTimestamp_ : 0;
         pos.lastActionTimestamp = nowTs;
 
@@ -264,17 +376,30 @@ contract OmniGuardVault is AbstractCallback {
         uint256 secondaryPriceE8_,
         uint16 rebalanceBps_,
         uint64 originTimestamp_,
-        uint256 originTxHash_
-    ) external onlyServiceProvider onlyCallbackSender(reactiveSender_) {
+        uint256 originTxHash_,
+        uint256 logIndex_
+    ) external onlyServiceProvider onlyCallbackSender(reactiveSender_) whenNotPaused {
         if (rebalanceBps_ == 0 || rebalanceBps_ > OmniGuardTypes.BPS_DENOMINATOR) {
             revert InvalidBps(rebalanceBps_);
         }
-        if (executedOriginTx[originTxHash_][ruleId_]) {
-            revert DuplicateCallbackExecution(originTxHash_, ruleId_);
+        if (rebalanceBps_ > maxSingleActionBps) {
+            revert ActionBpsExceedsCap(rebalanceBps_, maxSingleActionBps);
         }
-        executedOriginTx[originTxHash_][ruleId_] = true;
 
         VaultPosition storage pos = positions[marketId_];
+        if (pos.circuitBreakerActive) {
+            revert CircuitBreakerActive(marketId_);
+        }
+
+        bytes32 replayKey = keccak256(abi.encode(originTxHash_, logIndex_, ruleId_));
+        if (executedCallbacks[replayKey]) {
+            revert DuplicateCallbackExecution(originTxHash_, logIndex_, ruleId_);
+        }
+        executedCallbacks[replayKey] = true;
+
+        uint64 nowTs = uint64(block.timestamp);
+        _consumeRollingWindowCap(pos, marketId_, nowTs);
+
         uint256 collateralBefore = pos.volatileCollateralUsdE8;
         uint256 rebalanceAmount = (pos.volatileCollateralUsdE8 * rebalanceBps_) / OmniGuardTypes.BPS_DENOMINATOR;
         pos.volatileCollateralUsdE8 -= rebalanceAmount;
@@ -287,7 +412,6 @@ contract OmniGuardVault is AbstractCallback {
         uint256 minPrice = primaryPriceE8_ < secondaryPriceE8_ ? primaryPriceE8_ : secondaryPriceE8_;
         uint256 spreadBps = minPrice > 0 ? (diff * OmniGuardTypes.BPS_DENOMINATOR) / minPrice : 0;
 
-        uint64 nowTs = uint64(block.timestamp);
         uint64 latencySec = nowTs >= originTimestamp_ ? nowTs - originTimestamp_ : 0;
         pos.lastActionTimestamp = nowTs;
 
@@ -325,6 +449,17 @@ contract OmniGuardVault is AbstractCallback {
         );
     }
 
+    function _consumeRollingWindowCap(VaultPosition storage pos, bytes32 marketId_, uint64 nowTs_) internal {
+        if (pos.windowStartTimestamp == 0 || nowTs_ >= pos.windowStartTimestamp + BREAKER_WINDOW_SECONDS) {
+            pos.windowStartTimestamp = nowTs_;
+            pos.windowActionCount = 0;
+        }
+        if (pos.windowActionCount >= maxActionsPerWindow) {
+            revert WindowActionCapExceeded(marketId_, maxActionsPerWindow);
+        }
+        pos.windowActionCount += 1;
+    }
+
     function getReceiptsCount() external view returns (uint256) {
         return receipts.length;
     }
@@ -338,13 +473,14 @@ contract OmniGuardVault is AbstractCallback {
     }
 
     /**
-     * @notice Computes current vault health factor in bps (e.g., 16666 = 1.6666x; type(uint256).max if zero debt).
+     * @notice Computes current vault health factor in bps (e.g., 17291 = 1.7291x; type(uint256).max if zero debt).
+     * @dev Avoids divide-before-multiply by multiplying weighted LTV collateral directly by 100 (= 10000 / 100).
      */
     function getHealthFactorBps(bytes32 marketId_) external view returns (uint256) {
-        VaultPosition memory pos = positions[marketId_];
-        if (pos.debtUsdE8 == 0) return type(uint256).max;
-        // Weight volatile collateral at 80% LTV and stable reserve at 95% LTV.
-        uint256 effectiveCollateral = (pos.volatileCollateralUsdE8 * 80 + pos.stableReserveUsdE8 * 95) / 100;
-        return (effectiveCollateral * OmniGuardTypes.BPS_DENOMINATOR) / pos.debtUsdE8;
+        uint256 debt = positions[marketId_].debtUsdE8;
+        if (debt < 1) return type(uint256).max;
+        uint256 weightedCollateral = positions[marketId_].volatileCollateralUsdE8 * VOLATILE_LTV_PCT
+            + positions[marketId_].stableReserveUsdE8 * STABLE_LTV_PCT;
+        return (weightedCollateral * LTV_TO_BPS_MULTIPLIER) / debt;
     }
 }

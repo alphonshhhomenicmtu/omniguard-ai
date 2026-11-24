@@ -1,13 +1,17 @@
 /**
- * OmniGuard AI — EIP-712 Neural Advisement Signer
+ * OmniGuard AI — EIP-712 Neural Advisement Signer (V2 Fail-Closed)
  *
  * Signs NeuralAdvisement typed data matching OmniMarketFeed.sol's exact domain separator
  * and struct typehash so live neural classifications are cryptographically verified on-chain
  * via ecrecover before triggering Reactive Omni subscriptions.
+ *
+ * V2 Security Fix (H1): No silent fallback to public Hardhat/Anvil keys. Live signing
+ * fails closed when NEURAL_SIGNER_PRIVATE_KEY is missing. Local offline tests or explicitly
+ * badged SIMULATED mode must pass `allowEphemeralSimulationKey: true` intentionally.
  */
 
 import { type Address, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 export interface NeuralAdvisementPayload {
   marketId: Hex;
@@ -23,6 +27,7 @@ export interface SignedNeuralAdvisement {
   signer: Address;
   chainId: number;
   verifyingContract: Address;
+  simulatedSigner: boolean;
   advisement: {
     marketId: Hex;
     regime: number;
@@ -35,16 +40,38 @@ export interface SignedNeuralAdvisement {
   signature: Hex;
 }
 
-// Deterministic non-production ephemeral key used ONLY when NEURAL_SIGNER_PRIVATE_KEY is unset in local simulation mode.
-const EPHEMERAL_SIMULATION_KEY: Hex =
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+let cachedSessionSimKey: Hex | null = null;
 
-export function getNeuralSignerAccount(privateKeyHex?: string) {
-  const key =
-    privateKeyHex && /^0x[0-9a-fA-F]{64}$/.test(privateKeyHex.trim())
-      ? (privateKeyHex.trim() as Hex)
-      : EPHEMERAL_SIMULATION_KEY;
-  return privateKeyToAccount(key);
+function getOrCreateSessionSimKey(): Hex {
+  if (!cachedSessionSimKey) {
+    cachedSessionSimKey = generatePrivateKey();
+  }
+  return cachedSessionSimKey;
+}
+
+export function hasConfiguredNeuralSignerKey(privateKeyHex?: string): boolean {
+  return Boolean(privateKeyHex && /^0x[0-9a-fA-F]{64}$/.test(privateKeyHex.trim()));
+}
+
+export function getNeuralSignerAccount(
+  privateKeyHex?: string,
+  options: { allowEphemeralSimulationKey?: boolean } = {}
+) {
+  if (hasConfiguredNeuralSignerKey(privateKeyHex)) {
+    return {
+      account: privateKeyToAccount(privateKeyHex!.trim() as Hex),
+      simulatedSigner: false,
+    };
+  }
+  if (!options.allowEphemeralSimulationKey) {
+    throw new Error(
+      "NEURAL_SIGNER_PRIVATE_KEY is not configured. Refusing to sign live EIP-712 advisements with a fallback key (fail-closed)."
+    );
+  }
+  return {
+    account: privateKeyToAccount(getOrCreateSessionSimKey()),
+    simulatedSigner: true,
+  };
 }
 
 export async function signNeuralAdvisement(params: {
@@ -52,8 +79,11 @@ export async function signNeuralAdvisement(params: {
   verifyingContract: Address;
   advisement: NeuralAdvisementPayload;
   privateKeyHex?: string;
+  allowEphemeralSimulationKey?: boolean;
 }): Promise<SignedNeuralAdvisement> {
-  const account = getNeuralSignerAccount(params.privateKeyHex);
+  const { account, simulatedSigner } = getNeuralSignerAccount(params.privateKeyHex, {
+    allowEphemeralSimulationKey: params.allowEphemeralSimulationKey,
+  });
 
   const signature = await account.signTypedData({
     domain: {
@@ -89,6 +119,7 @@ export async function signNeuralAdvisement(params: {
     signer: account.address,
     chainId: params.chainId,
     verifyingContract: params.verifyingContract,
+    simulatedSigner,
     advisement: {
       marketId: params.advisement.marketId,
       regime: params.advisement.regime,

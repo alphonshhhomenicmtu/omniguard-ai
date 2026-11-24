@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.29;
+pragma solidity 0.8.29;
 
 /**
  * @title IOmniGuardTypes
- * @notice Shared enums, structs, and canonical event topic0 constants for OmniGuard AI
+ * @notice Shared enums, structs, security caps, and canonical event topic0 constants for OmniGuard AI V2
  *         across Origin chains (Base Sepolia / Unichain Sepolia), Reactive Lasna, and Destination vaults.
- * @dev All cooldowns, expirations, and latency windows strictly use Unix timestamps (uint64 seconds),
- *      never block numbers, in compliance with Base Sepolia's 200ms Denim block cadence.
+ * @dev All cooldowns, expirations, freshness windows, and latency measurements strictly use Unix timestamps
+ *      (`uint64` seconds), never `block.number`, in compliance with Base Sepolia's 200ms Denim block cadence.
  */
 library OmniGuardTypes {
     /// @notice Neural Risk Sentinel classification regimes.
@@ -88,14 +88,26 @@ library OmniGuardTypes {
     }
 
     /// @notice Basis points denominator (100.00%).
-    uint16 internal constant BPS_DENOMINATOR = 10_000;
+    uint16 internal constant BPS_DENOMINATOR = 1e4;
 
     /// @notice Minimum safe callback gas limit on Base Sepolia / Unichain Sepolia Omni proxies
-    ///         (accounts for 80,000 _extraGas + 50,000 _maxChargeGas + callback execution headroom).
-    uint64 internal constant MIN_CALLBACK_GAS_LIMIT = 250_000;
+    ///         (accounts for 80,000 _extraGas + 50,000 _maxChargeGas + 15-field receipt storage write headroom).
+    uint64 internal constant MIN_CALLBACK_GAS_LIMIT = 45e4;
 
     /// @notice Maximum allowed callback gas limit per rule.
-    uint64 internal constant MAX_CALLBACK_GAS_LIMIT = 2_000_000;
+    uint64 internal constant MAX_CALLBACK_GAS_LIMIT = 2e6;
+
+    /// @notice Hard bounds preventing dust-rule gas DoS inside Lasna's ~900,000 gas react() budget.
+    uint256 internal constant MAX_ACTIVE_RULES_PER_MARKET = 8;
+    uint256 internal constant MAX_ACTIVE_RULES_PER_VAULT = 8;
+    uint256 internal constant MAX_TOTAL_ACTIVE_RULES = 32;
+
+    /// @notice Maximum tolerated age difference between primary and secondary origin price legs (seconds).
+    uint64 internal constant MAX_SPREAD_LEG_AGE_SECONDS = 120;
+
+    /// @notice Maximum TTL and clock-skew bounds for signed EIP-712 neural advisements (seconds).
+    uint64 internal constant MAX_ADVISEMENT_TTL_SECONDS = 180;
+    uint64 internal constant MAX_ISSUED_AT_SKEW_SECONDS = 120;
 
     /// @notice Canonical topic0 hash for OmniMarketFeed.PriceUpdated.
     uint256 internal constant PRICE_UPDATED_TOPIC0 =
