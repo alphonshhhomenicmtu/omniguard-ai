@@ -1360,4 +1360,138 @@ contract OmniGuardEndToEndTest is Test {
         assertLe(afterPos.volatileCollateralUsdE8, beforePos.volatileCollateralUsdE8);
         assertGe(afterPos.stableReserveUsdE8, beforePos.stableReserveUsdE8);
     }
+
+    // -------------------------------------------------------------------------
+    // 10. Additional Adversarial Edge Cases (Spoofed Emitters, Deactivation, Zero Debt)
+    // -------------------------------------------------------------------------
+    function test_V2Security_SpoofedOriginEmitterAndWrongOpCodeSilentlyIgnored() public {
+        vm.prank(owner);
+        reactiveGuard.createRule(_defaultStopLossRuleParams(address(unichainVault), UNICHAIN_SEPOLIA_CHAIN_ID));
+
+        bytes memory priceData = abi.encode(uint256(2500_00000000), uint256(3200_00000000), int256(-2187), uint256(900), uint64(block.timestamp));
+
+        // 1. Spoofed contract address on primary chain
+        IReactive.LogRecord memory spoofedEmitter = IReactive.LogRecord({
+            chainId: BASE_SEPOLIA_CHAIN_ID,
+            contractAddress: attacker,
+            topic0: OmniGuardTypes.PRICE_UPDATED_TOPIC0,
+            topic1: uint256(OmniGuardTypes.MARKET_WETH_USDC),
+            topic2: 0,
+            topic3: 0,
+            data: priceData,
+            blockNumber: block.number,
+            opCode: 2,
+            blockHash: 0,
+            txHash: 9001,
+            logIndex: 0
+        });
+        assertTrue(system.trigger(IReactive(payable(address(reactiveGuard))), spoofedEmitter, 0));
+        assertEq(reactiveGuard.totalCallbacksRequested(), 0);
+        assertEq(reactiveGuard.totalEventsProcessed(), 0);
+
+        // 2. Wrong opCode (e.g. 1 instead of 2) from primary feed
+        IReactive.LogRecord memory wrongOpCode = IReactive.LogRecord({
+            chainId: BASE_SEPOLIA_CHAIN_ID,
+            contractAddress: address(baseFeed),
+            topic0: OmniGuardTypes.PRICE_UPDATED_TOPIC0,
+            topic1: uint256(OmniGuardTypes.MARKET_WETH_USDC),
+            topic2: 0,
+            topic3: 0,
+            data: priceData,
+            blockNumber: block.number,
+            opCode: 1,
+            blockHash: 0,
+            txHash: 9002,
+            logIndex: 0
+        });
+        assertTrue(system.trigger(IReactive(payable(address(reactiveGuard))), wrongOpCode, 0));
+        assertEq(reactiveGuard.totalCallbacksRequested(), 0);
+    }
+
+    function test_V2Security_DeactivatedRuleSkippedInReactAndReactivatable() public {
+        vm.startPrank(owner);
+        uint256 ruleId = reactiveGuard.createRule(
+            _defaultStopLossRuleParams(address(unichainVault), UNICHAIN_SEPOLIA_CHAIN_ID)
+        );
+        reactiveGuard.setRuleActive(ruleId, false);
+        vm.stopPrank();
+
+        assertEq(reactiveGuard.activeRulesCount(), 0);
+
+        // Crash while deactivated -> 0 callbacks
+        vm.recordLogs();
+        vm.prank(owner);
+        baseFeed.simulateFlashCrash(OmniGuardTypes.MARKET_WETH_USDC, 600, 900);
+        assertEq(_relayRecordedLogs(vm.getRecordedLogs(), BASE_SEPOLIA_CHAIN_ID, 2, 0, 0), 0);
+
+        // Reactivate -> next crash triggers cleanly
+        vm.prank(owner);
+        reactiveGuard.setRuleActive(ruleId, true);
+        assertEq(reactiveGuard.activeRulesCount(), 1);
+
+        vm.recordLogs();
+        vm.prank(owner);
+        baseFeed.simulateFlashCrash(OmniGuardTypes.MARKET_WETH_USDC, 600, 900);
+        assertEq(_relayRecordedLogs(vm.getRecordedLogs(), BASE_SEPOLIA_CHAIN_ID, 2, 0, 0), 1);
+    }
+
+    function test_V2Security_VaultZeroDebtHealthFactorAndInvalidActionBpsRejected() public {
+        vm.prank(owner);
+        unichainVault.configurePosition(OmniGuardTypes.MARKET_WBTC_USDC, 50_000_00000000, 10_000_00000000, 0);
+        assertEq(unichainVault.getHealthFactorBps(OmniGuardTypes.MARKET_WBTC_USDC), type(uint256).max);
+
+        // hedgeBps = 0 must revert InvalidBps(0)
+        bytes memory zeroBpsPayload = abi.encodeWithSignature(
+            "executeProtection(address,uint256,uint8,bytes32,uint256,uint16,uint16,uint64,uint256,uint256)",
+            address(0),
+            1,
+            uint8(0),
+            OmniGuardTypes.MARKET_WBTC_USDC,
+            uint256(60_000_00000000),
+            uint16(0),
+            uint16(0),
+            uint64(block.timestamp),
+            uint256(9101),
+            uint256(0)
+        );
+        (bool okZero, bytes memory errZero) = unichainProxy.deliverCallback(
+            address(reactiveGuard),
+            ISystemContract.CallbackConfiguration_V_1_0({
+                chainId: UNICHAIN_SEPOLIA_CHAIN_ID,
+                recipient: address(unichainVault),
+                gasLimit: 500_000,
+                payload: zeroBpsPayload
+            }),
+            0
+        );
+        assertFalse(okZero);
+        assertEq(errZero, abi.encodeWithSelector(OmniGuardVault.InvalidBps.selector, uint16(0)));
+
+        // hedgeBps = 10001 (> BPS_DENOMINATOR) must revert InvalidBps(10001)
+        bytes memory overBpsPayload = abi.encodeWithSignature(
+            "executeProtection(address,uint256,uint8,bytes32,uint256,uint16,uint16,uint64,uint256,uint256)",
+            address(0),
+            1,
+            uint8(0),
+            OmniGuardTypes.MARKET_WBTC_USDC,
+            uint256(60_000_00000000),
+            uint16(10_001),
+            uint16(0),
+            uint64(block.timestamp),
+            uint256(9102),
+            uint256(0)
+        );
+        (bool okOver, bytes memory errOver) = unichainProxy.deliverCallback(
+            address(reactiveGuard),
+            ISystemContract.CallbackConfiguration_V_1_0({
+                chainId: UNICHAIN_SEPOLIA_CHAIN_ID,
+                recipient: address(unichainVault),
+                gasLimit: 500_000,
+                payload: overBpsPayload
+            }),
+            0
+        );
+        assertFalse(okOver);
+        assertEq(errOver, abi.encodeWithSelector(OmniGuardVault.InvalidBps.selector, uint16(10_001)));
+    }
 }

@@ -42,12 +42,12 @@ Following an internal adversarial red-team review of V1, the Solidity contracts 
 
 | Security Check / Tool | Result | What It Proves |
 |---|---|---|
-| **Foundry Unit, Regression & Fuzz (`forge test`)** | **28 / 28 PASS** | Closes every P0/High/Med red-team finding + 256-run portfolio value conservation fuzz |
+| **Foundry Unit, Regression & Fuzz (`forge test`)** | **31 / 31 PASS** | Closes every P0/High/Med red-team finding + 256-run portfolio value conservation fuzz |
 | **Foundry Stateful Invariants (`OmniGuardInvariants.t.sol`)** | **6 / 6 PASS** | **256 runs &times; 128,000 multi-actor calls (0 reverts, 0 violations)** across owner, attacker, pause, breaker & 200ms block rolls |
 | **Aderyn (`v0.6.8`)** | **0 High** (`5` Low) | Strict CEI callback dispatch & owner-gated `coverDebt()` |
 | **Slither (`v0.11.6`)** | **0 High · 0 Medium** (`7` Low, `3` Info) | Zero `reentrancy-eth`, zero `reentrancy-no-eth`, zero `divide-before-multiply`, zero `incorrect-equality` |
 | **Gitleaks** | **0 Leaks** | Clean git history; `.env.testnet` ignored; fail-closed EIP-712 signer |
-| **Dashboard Vitest + Agent Tests** | **14 / 14 + 5 / 5 PASS** | Breaker Lab guard parity, MLP monotonicity, V2 ABI rule compiler, live receipt decoder |
+| **Dashboard Vitest + Agent Tests** | **32 / 32 + 5 / 5 PASS** | Breaker Lab guard parity, MLP monotonicity & NaN/upside guardrails, V2 ABI round-trip, live receipt decoder |
 
 ### Key V2 Contract Fixes (`contracts/src/`)
 1. **Access Control & Allowlisting (`OmniGuardReactive.sol`)**: Gated `createRule()` with `onlyRuleCreator` (owner or allowlisted operators), added `allowedDestinationVaults[chainId][vault]`, capped active rules at **8 per market / 8 per vault / 32 total**, and added swap-and-pop pruning in `setRuleActive(false)` so `react()` never hits Lasna's ~900,000 gas ceiling.
@@ -142,7 +142,7 @@ reactive-omni/
 │   │   ├── reactive/OmniGuardReactive.sol       # V2 allowlisted, capped, pausable, CEI AbstractReactive
 │   │   └── destination/OmniGuardVault.sol       # V2 locked circuit-breaker, rolling-cap AbstractCallback vault
 │   └── test/
-│       ├── OmniGuardEndToEnd.t.sol              # 28 unit, E2E, 200ms timestamp, V2 security & fuzz tests
+│       ├── OmniGuardEndToEnd.t.sol              # 31 unit, E2E, 200ms timestamp, V2 security & fuzz tests
 │       └── invariants/OmniGuardInvariants.t.sol # 6 stateful invariants (256 runs, 128,000 calls)
 ├── dashboard/                                   # Public Static Live RPC Judge Workbench + Breaker Lab (GitHub Pages)
 │   └── src/lib/
@@ -150,7 +150,7 @@ reactive-omni/
 │       ├── liveRpc.ts                           # Browser-direct viem RPC reader & /diag runner
 │       ├── breakerEngine.ts                     # Deterministic V2 Solidity guard mirror (6 attack vectors)
 │       ├── neuralAndCompiler.ts                 # Browser OmniRisk-MLP-7x12x4 + V2 ABI calldata compiler
-│       └── workbench.test.ts                    # 14 Vitest unit tests
+│       └── workbench.test.ts                    # 32 Vitest unit & adversarial tests
 ├── agent/                                       # Fail-closed EIP-712 signer, neural model & local telemetry server
 ├── scripts/                                     # 3-chain deployment & full-loop proof scripts
 ├── deployments/                                 # Live testnet.json & last-proof.json artifacts

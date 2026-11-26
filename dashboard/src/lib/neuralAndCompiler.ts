@@ -111,6 +111,7 @@ const CREATE_RULE_ABI = parseAbi([
 ]);
 
 function clip(val: number, min: number, max: number): number {
+  if (!Number.isFinite(val)) return min;
   return Math.max(min, Math.min(max, val));
 }
 
@@ -128,7 +129,7 @@ function softmax(logits: number[]): number[] {
 export function runNeuralRiskInference(input: MarketFeatureInput): NeuralInferenceResult {
   const t0 = performance.now();
   const vector = [
-    clip(Math.abs(input.priceChangeBps) / 800, 0, 2.0),
+    clip((input.priceChangeBps < 0 ? Math.abs(input.priceChangeBps) : input.priceChangeBps * 0.25) / 800, 0, 2.0),
     clip(Math.max(0, -input.priceChangeBps) / 600, 0, 2.0),
     clip(input.volatilityBps / 900, 0, 2.0),
     clip((16_500 - input.healthFactorBps) / 4_500, 0, 2.0),
@@ -289,24 +290,30 @@ export function compileNaturalLanguageRule(prompt: string): CompiledRule {
   let priceFloorUsd = 0;
   if (floorMatch && kind === "STOP_LOSS_HEDGE") {
     const parsed = parseFloat(floorMatch[1].replace(/,/g, ""));
-    if (Number.isFinite(parsed) && parsed > 50) priceFloorUsd = parsed;
+    if (Number.isFinite(parsed) && parsed > 50 && parsed <= 1_000_000_000) priceFloorUsd = parsed;
   }
 
-  const dropBps =
+  let dropBps =
     parsePercentAfterKeywords(lower, /(?:drop|drops|fall|falls|crash|drawdown|down)[^\d%]{0,20}(\d+(?:\.\d+)?)\s*%/i) ??
     (kind === "STOP_LOSS_HEDGE" ? 400 : 0);
+  if (kind === "STOP_LOSS_HEDGE" && priceFloorUsd === 0 && dropBps <= 0) {
+    dropBps = 400;
+    warnings.push("No non-zero stop-loss trigger detected; defaulted maxDrawdownBps to 400 bps (4.0%) to satisfy V2 MissingTriggerCondition guard.");
+  }
 
   const hfMatch = lower.match(/(?:health\s*factor|hf)[^\d]{0,20}(\d+(?:\.\d+)?)x?/i);
-  const minHealthFactorBps =
-    kind === "HEALTH_FACTOR_RESCUE" ? (hfMatch ? Math.round(parseFloat(hfMatch[1]) * 10_000) : 12_500) : 0;
+  const rawHfBps = hfMatch && Number.isFinite(parseFloat(hfMatch[1])) ? Math.round(parseFloat(hfMatch[1]) * 10_000) : 12_500;
+  const minHealthFactorBps = kind === "HEALTH_FACTOR_RESCUE" ? Math.min(50_000, Math.max(10_000, rawHfBps)) : 0;
 
-  const aiRiskBps =
+  const rawAiRiskBps =
     parsePercentAfterKeywords(lower, /\b(?:risk|neural|ai)\b[^\d%]{0,24}(\d+(?:\.\d+)?)\s*%/i) ??
     (kind === "AI_REGIME_ESCALATION" ? 7500 : 0);
+  const aiRiskBps = kind === "AI_REGIME_ESCALATION" ? Math.min(10_000, Math.max(100, rawAiRiskBps)) : rawAiRiskBps;
 
-  const spreadBps =
+  const rawSpreadBps =
     parsePercentAfterKeywords(lower, /\b(?:spread|gap|divergence)\b[^\d%]{0,20}(\d+(?:\.\d+)?)\s*%/i) ??
     (kind === "CROSS_CHAIN_REBALANCE" ? 150 : 0);
+  const spreadBps = kind === "CROSS_CHAIN_REBALANCE" ? Math.min(10_000, Math.max(10, rawSpreadBps)) : rawSpreadBps;
 
   const hedgeBps =
     parsePercentAfterKeywords(

@@ -82,6 +82,7 @@ const W2: number[][] = [
 const B2: number[] = [0.4, 0.15, -0.45, -1.1];
 
 function clip(val: number, min: number, max: number): number {
+  if (!Number.isFinite(val)) return min;
   return Math.max(min, Math.min(max, val));
 }
 
@@ -100,7 +101,11 @@ function softmax(logits: number[]): number[] {
  * Extracts bounded dimensionless features from raw cross-chain market telemetry.
  */
 export function extractFeatures(input: MarketFeatureInput): { vector: number[]; labels: string[] } {
-  const absDrop = clip(Math.abs(input.priceChangeBps) / 800, 0, 2.0);
+  const absDrop = clip(
+    (input.priceChangeBps < 0 ? Math.abs(input.priceChangeBps) : input.priceChangeBps * 0.25) / 800,
+    0,
+    2.0
+  );
   const negMomentum = clip(Math.max(0, -input.priceChangeBps) / 600, 0, 2.0);
   const volNorm = clip(input.volatilityBps / 900, 0, 2.0);
   // Health factor <= 1.00x (10000 bps) -> stress 1.6+, >= 1.65x -> stress 0
