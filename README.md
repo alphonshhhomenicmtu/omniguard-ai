@@ -7,8 +7,8 @@ Built for the **DoraHacks Reactive Omni Buildathon** (Track: **Every Second Coun
 | Judge Resource | Direct Link |
 |---|---|
 | **Public 1-Click Live RPC Workbench & Adversarial Breaker Lab** | **[https://alphonshhhomenicmtu.github.io/omniguard-ai/](https://alphonshhhomenicmtu.github.io/omniguard-ai/)** |
-| **Live `/diag` 3-Chain RPC & Self-Test Panel** | **[https://alphonshhhomenicmtu.github.io/omniguard-ai/diag/](https://alphonshhhomenicmtu.github.io/omniguard-ai/diag/)** |
-| **1080p Demo Video (2m 30s)** | **[https://youtu.be/pggBrUXMLTo](https://youtu.be/pggBrUXMLTo)** |
+| **Live `/diag` 3-Chain RPC & Self-Test Panel** | **[https://alphonshhhomenicmtu.github.io/omniguard-ai/?tab=diag](https://alphonshhhomenicmtu.github.io/omniguard-ai/?tab=diag)** |
+| **1080p Demo Video (2m 11s)** | **[https://youtu.be/pggBrUXMLTo](https://youtu.be/pggBrUXMLTo)** |
 | **10-Slide Technical Pitch Deck (PDF)** | **[docs/omniguard-deck.pdf](docs/omniguard-deck.pdf)** |
 
 ---
@@ -107,7 +107,7 @@ flowchart LR
 ## Quick Start & Reproducible Verification
 
 ### 1. Live Zero-Setup Judge Workbench
-Open **[https://alphonshhhomenicmtu.github.io/omniguard-ai/](https://alphonshhhomenicmtu.github.io/omniguard-ai/)** to inspect live `getReceipt(0)` & `getReceipt(1)` reads directly from Unichain Sepolia RPC, run all 6 attacks in the **Adversarial Breaker Lab**, test the **Neural & Rule Studio**, or visit **`/diag/`** for automated 3-chain self-tests.
+Open **[https://alphonshhhomenicmtu.github.io/omniguard-ai/](https://alphonshhhomenicmtu.github.io/omniguard-ai/)** to inspect live `getReceipt(0)` & `getReceipt(1)` reads directly from Unichain Sepolia RPC, run all 6 attacks in the **Adversarial Breaker Lab**, test the **Neural & Rule Studio**, or open **[`?tab=diag`](https://alphonshhhomenicmtu.github.io/omniguard-ai/?tab=diag)** for the automated 3-chain self-test. GitHub Pages has no SPA fallback, so a bare `/diag/` path 404s until `dashboard/public/diag/index.html` is in the published build. The same static probe lives at [`docs/diag/index.html`](docs/diag/index.html).
 
 ### 2. Reproduce Smart Contract Unit, Fuzz & Stateful Invariant Suite
 ```bash
