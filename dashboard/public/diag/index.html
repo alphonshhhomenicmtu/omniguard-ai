@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OmniGuard /diag</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #080d1a; color: #e7eefc; font: 16px/1.5 "Segoe UI", sans-serif; }
+    main { max-width: 46rem; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.6rem; margin-bottom: 0.3rem; }
+    p { color: #b7c3da; }
+    a { color: #7dd3fc; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { text-align: left; padding: 0.55rem 0.4rem; border-bottom: 1px solid #243049; vertical-align: top; }
+    .ok { color: #4ade80; }
+    .bad { color: #f87171; }
+    code { font-family: ui-monospace, monospace; font-size: 0.86rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>OmniGuard /diag</h1>
+    <p>Static chain probe. GitHub Pages was returning 404 for <code>/diag/</code> because the published site is the dashboard build and had no <code>diag/index.html</code>. The full five-check panel, including the neural forward pass and breaker lab, is the workbench tab.</p>
+    <p><a href="https://alphonshhhomenicmtu.github.io/omniguard-ai/?tab=diag">Open the live self-test in the workbench</a></p>
+    <table>
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody id="rows">
+        <tr><td>Base Sepolia 84532</td><td>probing</td></tr>
+        <tr><td>Reactive Lasna 5318007</td><td>probing</td></tr>
+        <tr><td>Unichain Sepolia 1301</td><td>probing</td></tr>
+      </tbody>
+    </table>
+    <p>Contracts named in the README: feed <code>0xd30a3c3ddc662812b5bd37ca2cbc7b722a2a0f80</code>, reactive <code>0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6</code>, vault <code>0x5b1066a69297e2ec1d1e46374184669568d3380c</code>.</p>
+  </main>
+  <script>
+    const targets = [
+      ["Base Sepolia 84532", "https://sepolia.base.org", "0x14a34"],
+      ["Reactive Lasna 5318007", "https://lasna-rpc.rnk.dev/", "0x512577"],
+      ["Unichain Sepolia 1301", "https://sepolia.unichain.org", "0x515"]
+    ];
+    const body = document.querySelector("#rows");
+    body.replaceChildren();
+    async function probe(name, url, want) {
+      const started = performance.now();
+      const row = document.createElement("tr");
+      const left = document.createElement("td");
+      const right = document.createElement("td");
+      left.textContent = name;
+      right.textContent = "probing";
+      row.append(left, right);
+      body.append(row);
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] })
+        });
+        const payload = await response.json();
+        const chain = String(payload.result || "").toLowerCase();
+        const blockRes = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_blockNumber", params: [] })
+        });
+        const blockPayload = await blockRes.json();
+        const block = Number.parseInt(blockPayload.result, 16);
+        const ms = Math.round(performance.now() - started);
+        const match = chain === want;
+        right.className = match ? "ok" : "bad";
+        right.textContent = (match ? "PASS" : "FAIL") + " chain " + chain + " block " + block.toLocaleString() + " (" + ms + " ms)";
+      } catch (error) {
+        right.className = "bad";
+        right.textContent = "FAIL " + (error instanceof Error ? error.message : "rpc error");
+      }
+    }
+    for (const item of targets) probe(item[0], item[1], item[2]);
+  </script>
+</body>
+</html>
