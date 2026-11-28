@@ -34,11 +34,23 @@ Two full end-to-end Reactive Omni loops are confirmed on-chain and live-readable
 | **Base Sepolia** | `84532` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.basescan.org/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | [`0x1d8e2c25...d4439e`](https://sepolia.basescan.org/tx/0x1d8e2c2514fe57b6fa7e6058cef87338c1f2736b3638bcb8d329e31082d4439e) |
 | **Unichain Sepolia** | `1301` | `OmniGuardVault` (`AbstractCallback`) | [`0x5b1066a69297e2ec1d1e46374184669568d3380c`](https://sepolia.uniscan.xyz/address/0x5b1066a69297e2ec1d1e46374184669568d3380c) | [`0xec51c6a6...3250f84`](https://sepolia.uniscan.xyz/tx/0xec51c6a6f610b00a323132dd5d6ca2804059ec67a148df345229f48853250f84) |
 
+### Deployment Provenance (Testnet V1 Live Demo vs V2 Hardened Source)
+
+The addresses in the table above are the 24 Nov 2026 testnet demo. A public bytecode read on 28 Nov 2026 (no new broadcast) shows those contracts still run that initial V1 demo runtime. `HEAD` in `contracts/src/` is the later V2 hardening. Forge proves the V2 source. It does not prove the bytecode at those addresses.
+
+| What a judge is looking at | What it actually is |
+|---|---|
+| Lasna `OmniGuardReactive` `0xb04fa6fa2eda6f378c0eefdd78eb625d2b4f5ef6` (11,378 bytes) | V1 demo. `nextRuleId()` is `4`. `rules(1)` is the stop-loss whose callback wrote Unichain receipt `#0`. The dispatcher contains `createRule` and `NotRuleOwner`. It does not contain `onlyRuleCreator`, `authorizedRuleCreators`, `allowedDestinationVaults`, `pause`, or `trustedNeuralSigner`. |
+| Unichain and Base `OmniGuardVault` `0x5b1066a69297e2ec1d1e46374184669568d3380c` (same 5,059-byte runtime on both chains) | V1 demo. `getReceipt(0)` matches Loop #1 above (2 second delta, `$100,000 -> $50,000` volatile). `getPosition` for `WETH/USDC` is the six-field V1 ledger: `$17,500` volatile, `$107,500` stable, `$60,000` debt, `circuitBreakerActive = true`. Replay storage is `executedOriginTx[originTxHash][ruleId]` (`DuplicateCallbackExecution(uint256,uint256)`). The runtime does not contain `CircuitBreakerActive`, `paused`, `maxSingleActionBps`, or `DuplicateCallbackExecution(uint256,uint256,uint256)`. |
+| `contracts/src/` on this commit | V2 source, checked offline by `forge test`. `createRule` is `onlyRuleCreator` (owner or `authorizedRuleCreators`) and requires `allowedDestinationVaults`. Owner `pause()` / `unpause()` silence `react()` and revert vault callbacks with `VaultPaused()`. `maxSingleActionBps` caps each callback. Vault replay is `keccak256(originTxHash, logIndex, ruleId)`. After `CIRCUIT_BREAKER_PAUSE`, later `executeProtection` and `executeCrossChainRebalance` revert `CircuitBreakerActive(marketId)`. |
+
+Receipt `#0` and receipt `#1` are real V1 demo transactions. The V2 controls in the next section live in source and in the Forge suite. They are not deployed at `0xb04fa6…` or `0x5b1066…`.
+
 ---
 
 ## V2 Security Hardening & Web3-Audit Verification
 
-Following an internal adversarial red-team review of V1, the Solidity contracts in `contracts/src/` and backend signer in `agent/` were hardened to V2 and audited across our full automated security toolchain:
+Following an internal adversarial red-team review of the V1 demo, the Solidity contracts in `contracts/src/` and the signer in `agent/` were hardened in source. The checks below are offline proofs of that source. The live addresses above are still the V1 demo bytecode described in **Deployment Provenance**.
 
 | Security Check / Tool | Result | What It Proves |
 |---|---|---|
